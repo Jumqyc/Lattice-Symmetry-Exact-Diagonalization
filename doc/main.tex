@@ -11,13 +11,15 @@
 
 \begin{document}
 \maketitle
-The center of many-body physics is to diagonalize the Hamiltonian $\mathcal{H}$ in the Hilbert space $\mathscr{H}$. To be explicit, we have\begin{align}
-    \mathscr{H} = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L}\mid \sigma_i=1,\dots,d\}
-\end{align}The problem with this approach is that the dimension of $\mathscr{H}$ is exponentially large. Let $L$ be the lattice size and $d$ be the local Hilbert space dimension, the dimension of $\mathscr{H}$ is $d^L$. If the system has $\mathsf{U}(1)$ symmetry, then $\mathscr{H}$ is further decomposed into subspaces $\mathscr{H}_N$ with fixed particle number $N$, defined as\begin{align}
+The central problem of many-body physics is to diagonalize the Hamiltonian $\mathcal{H}$ in the Hilbert space $\mathscr{H}$. To be explicit, in computational basis we have\begin{align}
+    \mathscr{H} = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L}\mid \sigma_i=1,\dots,d\}.
+\end{align}The problem with a naive approach is that $\mathscr{H}$ is exponentially large. Let $L$ be the lattice size and $d$ be the local Hilbert space dimension, the dimension of $\mathscr{H}$ is $d^L$. If the system has $\mathsf{U}(1)$ symmetry, then $\mathscr{H}$ is further decomposed into subspaces $\mathscr{H}_N$ with fixed particle number $N$, defined as\begin{align}
     \mathscr{H}_N = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L} \mid \sum_{i=1}^L \sigma_i = N\},
 \end{align} and the dimension of $\mathscr{H}_N$ is $\binom{L}{N}$, which is still exponentially large. 
 
-To address such problem, we will use the representation theory\cite{fulton1991representation} to decompose the Hilbert space into irreducible representations of the symmetry group $G$ of the Hamiltonian $\mathcal{H}$. We will assume $G$ is a finite group, and it acts on the Hilbert space $\mathscr{H}$ via a unitary representation $U: G \to U(\mathscr{H})$. 
+To address such problem, we will use the representation theory\cite{fulton1991representation} to decompose the Hilbert space into irreducible representations of the symmetry group $G$ of the Hamiltonian $\mathcal{H}$. 
+
+We will assume $G$ is a finite group, and it acts on the Hilbert space $\mathscr{H}$ via a unitary representation $U: G \to U(\mathscr{H})$. What we mean by $\mathcal{H}$ has symmetry $G$ is that $\mathcal{H}$ commutes with the action of $G$, i.e. $[U(g),\mathcal{H}] = 0$ for all $g\in G$. By Schur's lemma, we know that $\mathcal{H}$ is block diagonal in the basis of irreducible representations of $G$. Hence we can diagonalize $\mathcal{H}$ in each irreducible representation separately, which reduces the computational cost significantly.
 \section{Building the symmetry group}
 In our case case, we consider two kinds of symmetry: the lattice symmetry that permutes the sites and the internal symmetry that performs a spin flip:\begin{align}
     g\ket{\sigma_1\dots\sigma_L} &= \ket{\sigma_{g^{-1}(1)}\dots\sigma_{g^{-1}(L)}},\quad g\in G_{\mathrm{latt}}\\
@@ -30,37 +32,41 @@ Suppose we already know all the information of $G_{\mathrm{pt}}$, we need to \be
     \item Calculate the character table of $G_{\mathrm{latt}}$ and $G$.
 \end{enumerate}
 \subsection{The lattice Group}
-First we describe the structure of the lattice group $G_{\mathrm{latt}}=G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$. Let $t\in G_{\mathrm{tr}} $ and $r\in G_{\mathrm{pt}}$. The element in $G_{\mathrm{latt}}$ can be written as $(t,r)$, with the group multiplication defined as\begin{align}
-    (t_1,r_1)(t_2,r_2) = (t_1+r_1t_2,r_1r_2)
-\end{align}where $r(t)$ is the action of $r$ on $t$. The inverse of $(t,r)$ is given by\begin{align}
-    (t,r)^{-1} = (-r^{-1}t,r^{-1})
+First we describe the structure of the lattice group $G_{\mathrm{latt}}=G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$. Let $\mathbf{t}\in G_{\mathrm{tr}} $ and $r\in G_{\mathrm{pt}}$. The element in $G_{\mathrm{latt}}$ can be written as $(\mathbf{t},r)$. 
+It acts on the real space as\begin{align}
+    (\mathbf{t},r)\mathbf{x} = r\mathbf{x} + \mathbf{t}.
+\end{align}The group multiplication defined as\begin{align}
+    (\mathbf{t}_1,r_1)(\mathbf{t}_2,r_2) = (\mathbf{t}_1+r_1\mathbf{t}_2,r_1r_2)
+\end{align}where $r(\mathbf{t})$ is the action of $r$ on $\mathbf{t}$. The inverse of $(\mathbf{t},r)$ is given by\begin{align}
+    (\mathbf{t},r)^{-1} = (-r^{-1}\mathbf{t},r^{-1}).
 \end{align}
-It acts on the Hilbert space as\begin{align}
-    (t,r)\ket{\sigma_1\dots\sigma_L} = \ket{\sigma_{r^{-1}(t^{-1}(1))}\dots\sigma_{r^{-1}(t^{-1}(L))}}
-\end{align}
-
 \paragraph{Conjugacy Class} Since $G_{\mathrm{tr}}$ is a normal subgroup of $G_{\mathrm{latt}}$, the conjugacy class of $G_{\mathrm{latt}}$ is divided into two cases:\begin{enumerate}
     \item 
     Since\begin{align}
-        (a,r)(t,1)(a,r)^{-1}&= (a+rt, r)(-r^{-1}a,r^{-1}) \\
-        &= (a+rt-r^{-1}a,1)
+        (a,r)(\mathbf{t},1)(a,r)^{-1}&= (a+r\mathbf{t}, r)(-r^{-1}a,r^{-1}) \\
+        &= (a+r\mathbf{t}-r^{-1}a,1)
     \end{align}
-    for $(t,1)$ and $(t',1)$ to be in the same conjugacy class, we need $t' = a+rt-r^{-1}a$ for some $a\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
+    for $(\mathbf{t},1)$ and $(\mathbf{t}',1)$ to be in the same conjugacy class, we need $\mathbf{t}' = a+r\mathbf{t}-r^{-1}a$ for some $a\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
     \item Translations and point group elements. We have\begin{align}
-        (a,r)(t,s)(a,r)^{-1} &= (a+rt, rs)(-r^{-1}a,r^{-1}) \\
-        &= (a+rt-r^{-1}a,rsr^{-1})
+        (\textbf{a},r)(\mathbf{t},{s})(\textbf{a},r)^{-1} &= (\textbf{a}+r\mathbf{t}, r{s})(-r^{-1}\textbf{a},r^{-1}) \\
+        &= (\textbf{a}+r\mathbf{t}-r^{-1}\textbf{a},r{s}r^{-1})
     \end{align}
-    Hence for $(t,s)$ and $(t',s')$ to be in the same conjugacy class, we need $s$ and $s'$ to be in the same conjugacy class of $G_{\mathrm{pt}}$, and $t' = a+rt-r^{-1}a$ for some $a\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
+    Hence for $(\mathbf{t},{s})$ and $(\mathbf{t}',{s}')$ to be in the same conjugacy class, we need $\mathbf{s}$ and $\mathbf{s}'$ to be in the same conjugacy class of $G_{\mathrm{pt}}$, and $\mathbf{t}' = \textbf{a}+r\mathbf{t}-r^{-1}\textbf{a}$ for some $\textbf{a}\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
 \end{enumerate}
 \paragraph{Character} 
-The irreducible representations of $G_{\mathrm{tr}}$ are one-dimensional, and they are labeled by the momentum \begin{align}
-    k\in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\mid k_i = 0,\frac{2\pi}{N_i},\dots,\frac{2\pi(N_i-1)}{N_i}\right\},
+The irreducible representations of $G_{\mathrm{tr}}$ are one-dimensional, and are labeled by the momentum \begin{align}
+    \textbf{k}\in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\mid k_i = 0,\frac{2\pi}{N_i},\dots,\frac{2\pi(N_i-1)}{N_i}\right\},
 \end{align}with the character defined as\begin{align}
-    \rho_k(t) = e^{i k\cdot t}.
+    \chi_{\textbf{k}}^{G_{\mathrm{tr}}}(\mathbf{t}) = \textrm{e}^{\textrm{i} \textbf{k}\cdot \textbf{t}}.
 \end{align}
-The irreducible representations of $G_{\mathrm{latt}}$ are labeled by the momentum $k$ and the irreducible representations of the little group $G_k = \{r\in G_{\mathrm{pt}}\mid rk = k\}$. 
+The irreducible representations of $G_{\mathrm{latt}}$ are labeled by the momentum $\textbf{k}$ and the irreducible representations of the little group \begin{align}
+    G_{\textbf{k}} = \{r\in G_{\mathrm{pt}}\mid r\textbf{k} = \textbf{k}\}\subset G_{\mathrm{pt}}.
+\end{align}
+Suppose we know all the irreducible representations of the little group $G_{\textbf{k}}$, with its character denoted as $\chi_{\alpha}^{G_{\mathbf{k}}}$, then the irreducible representations of $G_{\mathrm{latt}}$ are given by\begin{align}
+    \chi_{\textbf{k},\alpha}^{G_{\mathrm{latt}}}(t,r) = \sum_{g\in G_{\mathrm{pt}}/G_{\textbf{k}}} \chi_{\textbf{k}}^{G_{\mathrm{tr}}}(gt)\chi_{\alpha}^{G_{\mathbf{k}}}(grg^{-1})
+\end{align}
+where $g$ runs over the left cosets of $G_{\textbf{k}}$ in $G_{\mathrm{pt}}$. 
 
-Suppose we know all the irreducible representations of the little group $G_{k}$, 
 \bibliography{bib.bib}
 \bibliographystyle{plain}
 
