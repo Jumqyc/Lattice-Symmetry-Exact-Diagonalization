@@ -8,7 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-
 class Model:
     '''
     Class representing a lattice structure. 
@@ -77,11 +76,7 @@ class Model:
             self.point_group = point_group
 
 
-        self.all_perms = [self._get_permutation_pt(op) * 
-                          reduce(lambda x, y: x * y, 
-                            [self._get_permutation_tr(i) ** ni for i, ni in enumerate(n)])
-                          for op in self.point_group 
-                          for n in product(*self.Nvec)]
+        self.lattice_group = LatticeGroup(self)
 
         self.couplings: list[Coupling] = []
     
@@ -113,16 +108,21 @@ class Model:
         if not all((0 <= ni < Ni) for ni, Ni in zip(n, self.Nvec)):
             raise ValueError(f"Indices must be in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
         return np.array(n) @ self.bz_cellvectors
-        
+
+    def norm(self,state:tuple[int,...],sector) -> float:
+        raise NotImplementedError
+
+    
     # TODO: rewrite this in C++ and bind it to Python.
     def _build_adapted_basis(self,
-                          Sztot:Optional[int] = None,
-                          spin_flip:bool = False
-                          )-> dict[tuple[int],int]:
+                             Sztot:Optional[int] = None,
+                             spin_flip:bool = False
+                             )-> dict[tuple[int],int]:
         '''
         Build an adapted basis for the lattice, taking into account the symmetries of the system
         Args:
             Sztot: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
+            spin_flip: If True, also include states obtained by spin-flip symmetry.
         Returns:
             A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
         '''
@@ -137,29 +137,15 @@ class Model:
                         yield state
         d = {}
         for basis in get_state(Sztot):
-            for sym in self.all_perms:
-                transformed = tuple(sym(np.array(basis)))
-                if transformed in d:
-                    break
-                if spin_flip:
-                    flipped = tuple(self.physical_dim - 1 - np.array(transformed))
-                    if flipped in d:
-                        break
-            else:
-                d[tuple(basis)] = len(d)
-            
+            orb = self.lattice_group.orbit(basis, spin_flip=spin_flip)
+            if orb[0] not in d:
+                d[orb[0]] = len(d)
         return d
 
 
     def set_center_at(self, center: int | np.ndarray):
         '''
         Center the lattice at a specific atom index or position.
-
-        .. note::
-            This only shifts stored positions; it does **not** rebuild
-            ``all_perms`` or other derived quantities.  Call this before
-            adding couplings or building the adapted basis.
-
         Args:
             center: The index of the atom (int), or a numpy array position,
                     to center the lattice around.
@@ -188,26 +174,25 @@ class Model:
 
         if extend:
             for pos, _, idx in self.extended_cell:
-                ax.scatter(*pos, alpha=0.6,color='blue')
+                ax.scatter(*pos, color='blue', alpha=0.6)
                 ax.text(*pos, str(idx), fontsize=8, ha='center', va='center')
 
         for pos, _, idx in self.unit_cell_idx:
             ax.scatter(*pos, color='red', alpha=0.8)
             ax.text(*pos, str(idx), fontsize=10, ha='center', va='center', color='white')
-        ax.set_aspect('equal')
+        ax.set_aspect('equal', adjustable='box')
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_title('Lattice Structure')
-        ax.set_aspect('equal', adjustable='box')
         return ax
 
-    def _get_idx(self, pos:np.ndarray,s:str,tol = 1e-6) -> int:
+    def _get_idx(self, pos: np.ndarray, s: str, tol: float = 1e-6) -> int:
         # brute force search
         # self.extended_cell is at most 1000, so this is fine
-        for p,s1,idx in self.extended_cell:
+        for p, s1, idx in self.extended_cell:
             if np.allclose(p, pos, atol=tol) and s1 == s:
                 return idx
-        raise ValueError(f"Position {pos} not found in unit cell nor extended cell.")
+        raise ValueError(f"Position {pos} not found in unit cell or extended cell.")
 
     def _get_permutation_pt(self, arr:np.ndarray)-> Permutation:
         '''
@@ -239,6 +224,7 @@ class Model:
             translated[idx] = self._get_idx(pos + self.cell_vectors[dir], s)
         return Permutation(translated)
 
+
 class Coupling:
     '''
     Class representing a coupling (interaction term) in the lattice.
@@ -259,7 +245,7 @@ class Coupling:
                  phys_dim: int,
                  sites: tuple[int, ...],
                  *terms: tuple[np.ndarray, ...]):
-        r'''
+        '''
         Initialize a Coupling object.
 
         Args:
@@ -397,9 +383,9 @@ class Permutation:
 
     def __mul__(self, other: 'Permutation') -> 'Permutation':
         if not isinstance(other, Permutation):
-            raise TypeError("Can only multiply with another SymmetryOperation.")
+            raise TypeError("Can only multiply with another Permutation.")
         if self.size != other.size:
-            raise ValueError("SymmetryOperations must be of the same size to multiply.")
+            raise ValueError("Permutations must be of the same size to multiply.")
         return Permutation(self.perm[other.perm])
     def inv(self)->Permutation:
         inv_perm = np.argsort(self.perm)
@@ -450,7 +436,7 @@ class PointGroup(ABC):
         raise NotImplementedError("This method should be implemented in subclasses.")
         
     @abstractmethod
-    def all_irreps(self) -> list[str]:
+    def all_irrps(self) -> list[str]:
         '''
         Return a list of all irreducible representations of the point group.
         Returns:
@@ -473,7 +459,7 @@ class PointGroup(ABC):
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     @abstractmethod
-    def __iter__(self)-> PointGroup:
+    def __iter__(self) -> Iterator[np.ndarray]:
         '''
         Return an iterator over the group operations in the point group.
         '''
@@ -506,7 +492,7 @@ class TrivialGroup(PointGroup):
             return NotImplemented
         return True
 
-    def all_irreps(self) -> list[str]:
+    def all_irrps(self) -> list[str]:
         return ['A']
 
     def little_group(self, k:np.ndarray,
@@ -529,3 +515,115 @@ class TrivialGroup(PointGroup):
             raise StopIteration
         self._iterated = True
         return np.array(self._operations[0], dtype=np.float64).reshape(self._shape)
+
+
+class LatticeGroup:
+    '''
+    Full lattice symmetry group  G_latt = G_tr ⋊ G_pt.
+
+    Stores translations, rotations, their induced permutations on
+    unit-cell sites, and the irreducible representations of G_latt.
+    Elements are ordered as (rotation, translation) pairs: for each
+    rotation in the point group, iterate over all translations.
+    '''
+    def __init__(self, model: 'Model'):
+        self.phys_dim = model.physical_dim
+
+        # ── translation vectors ─────────────────────────────────────────
+        self.translations: list[np.ndarray] = []
+        for ns in product(*[range(Ni) for Ni in model.Nvec]):
+            t = sum(n * model.cell_vectors[i] for i, n in enumerate(ns))
+            self.translations.append(t)
+
+        # ── rotation matrices ───────────────────────────────────────────
+        self.rotations: list[np.ndarray] = list(model.point_group)
+
+        self.N_tr = len(self.translations)
+        self.N_pt = len(self.rotations)
+
+        # ── permutations (one per group element) ────────────────────────
+        self.permutations: list[Permutation] = []
+        for op in self.rotations:
+            pt_perm = model._get_permutation_pt(op)
+            for n in product(*[range(Ni) for Ni in model.Nvec]):
+                tr_perm = reduce(lambda x, y: x * y,
+                    [model._get_permutation_tr(i) ** ni
+                     for i, ni in enumerate(n)])
+                self.permutations.append(pt_perm * tr_perm)
+
+        # ── irreducible representations of G_latt ───────────────────────
+        self.all_irrep: dict[tuple[tuple[int, ...], str], np.ndarray] = {}
+        reciprocal_basis = model.bz_cellvectors
+        for ns in product(*[range(Ni) for Ni in model.Nvec]):
+            k = model.momentum_vec(*ns)
+            lg, coset_reps = model.point_group.little_group(k, reciprocal_basis)
+            lg_ops = list(lg)
+            for irrep_label in lg.all_irrps():
+                chars = np.zeros(len(self), dtype=complex)
+                for elem_idx in range(len(self)):
+                    t_idx, r_idx = self.element(elem_idx)
+                    t = self.translations[t_idx]
+                    r = self.rotations[r_idx]
+                    chars[elem_idx] = self._induced_char(
+                        k, t, r, irrep_label, lg, lg_ops, coset_reps)
+                self.all_irrep[(ns, irrep_label)] = chars
+
+    def __len__(self) -> int:
+        return self.N_tr * self.N_pt
+
+    def element(self, idx: int) -> tuple[int, int]:
+        '''Return (translation_index, rotation_index) for the *idx*-th group element.'''
+        return idx % self.N_tr, idx // self.N_tr
+
+    def orbit(self, state: tuple[int, ...],
+              spin_flip: bool = False) -> list[tuple[int, ...]]:
+        '''
+        Compute the orbit of a given state under the action of all permutations
+        in the lattice group.
+
+        Args:
+            state: A tuple of integers representing the initial basis state.
+            spin_flip: If True, also include states obtained by spin-flip
+                       symmetry (s_i → phys_dim - 1 - s_i) followed by
+                       lattice permutations.
+        Returns:
+            A sorted list of unique tuples, each representing a state in the
+            orbit of the initial state.
+        '''
+        orb = [tuple(sym(np.array(state))) for sym in self.permutations]
+        if spin_flip:
+            flipped = tuple(self.phys_dim - 1 - np.array(state))
+            orb += [tuple(sym(np.array(flipped))) for sym in self.permutations]
+        return sorted(set(orb))
+    
+    def _induced_char(self, k: np.ndarray, t: np.ndarray, r: np.ndarray,
+                      irrep_label: str, lg: PointGroup,
+                      lg_ops: list[np.ndarray],
+                      coset_reps: list[np.ndarray]) -> complex:
+        '''
+        Compute  χ_{k,α}(t, r) — the induced character of G_latt.
+        '''
+        chi = 0.0 + 0.0j
+        for g in coset_reps:
+            chi_k = np.exp(1j * np.dot(k, g @ t))
+            grg_inv = g @ r @ g.T
+            if self._op_in_group(grg_inv, lg_ops):
+                chi_alpha = lg.character(irrep_label, grg_inv)
+            else:
+                chi_alpha = 0.0
+            chi += chi_k * chi_alpha
+        return chi
+
+    @staticmethod
+    def _op_in_group(op: np.ndarray, group_ops: list[np.ndarray]) -> bool:
+        for g in group_ops:
+            if np.allclose(op, g):
+                return True
+        return False
+
+    def character(self, sector: tuple[tuple[int, ...], str],
+                  op_idx: int) -> complex:
+        '''
+        Return the character of *sector* at the *op_idx*-th element of G_latt.
+        '''
+        return self.all_irrep[sector][op_idx]

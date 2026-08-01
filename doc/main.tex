@@ -3,6 +3,7 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
+\usepackage{hyperref}
 \usepackage{mathrsfs}
 \usepackage{physics}
 \author{Yuchen Qian}
@@ -27,11 +28,8 @@ In our case case, we consider two kinds of symmetry: the lattice symmetry that p
 \end{align}
 and the full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The lattice symmetry group $G_{\mathrm{latt}}$ is further decomposed into a semi-direct product of the translation  group $G_{\mathrm{tr}}$ and the point group $G_{\mathrm{pt}}$, i.e. $G_{\mathrm{latt}} = G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$, where $G_{\mathrm{tr}} = \mathbb{Z}_{N_1}\times\cdots\mathbb{Z}_{N_d}$ is a finite Abelian group and $G_{\mathrm{pt}}$ is a finite group. 
 
-Suppose we already know all the information of $G_{\mathrm{pt}}$, we need to \begin{enumerate}
-    \item Find the conjugacy classes of $G_{\mathrm{latt}}$ and $G$.
-    \item Calculate the character table of $G_{\mathrm{latt}}$ and $G$.
-\end{enumerate}
-\subsection{The lattice Group}
+Suppose we already know all the information of $G_{\mathrm{pt}}$, we need to Calculate the character table of $G_{\mathrm{latt}}$ and $G$.
+\paragraph{The lattice Group}
 First we describe the structure of the lattice group $G_{\mathrm{latt}}=G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$. Let $\mathbf{t}\in G_{\mathrm{tr}} $ and $r\in G_{\mathrm{pt}}$. The element in $G_{\mathrm{latt}}$ can be written as $(\mathbf{t},r)$. 
 It acts on the real space as\begin{align}
     (\mathbf{t},r)\mathbf{x} = r\mathbf{x} + \mathbf{t}.
@@ -40,20 +38,7 @@ It acts on the real space as\begin{align}
 \end{align}where $r(\mathbf{t})$ is the action of $r$ on $\mathbf{t}$. The inverse of $(\mathbf{t},r)$ is given by\begin{align}
     (\mathbf{t},r)^{-1} = (-r^{-1}\mathbf{t},r^{-1}).
 \end{align}
-\paragraph{Conjugacy Class} Since $G_{\mathrm{tr}}$ is a normal subgroup of $G_{\mathrm{latt}}$, the conjugacy class of $G_{\mathrm{latt}}$ is divided into two cases:\begin{enumerate}
-    \item 
-    Since\begin{align}
-        (a,r)(\mathbf{t},1)(a,r)^{-1}&= (a+r\mathbf{t}, r)(-r^{-1}a,r^{-1}) \\
-        &= (a+r\mathbf{t}-r^{-1}a,1)
-    \end{align}
-    for $(\mathbf{t},1)$ and $(\mathbf{t}',1)$ to be in the same conjugacy class, we need $\mathbf{t}' = a+r\mathbf{t}-r^{-1}a$ for some $a\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
-    \item Translations and point group elements. We have\begin{align}
-        (\textbf{a},r)(\mathbf{t},{s})(\textbf{a},r)^{-1} &= (\textbf{a}+r\mathbf{t}, r{s})(-r^{-1}\textbf{a},r^{-1}) \\
-        &= (\textbf{a}+r\mathbf{t}-r^{-1}\textbf{a},r{s}r^{-1})
-    \end{align}
-    Hence for $(\mathbf{t},{s})$ and $(\mathbf{t}',{s}')$ to be in the same conjugacy class, we need $\mathbf{s}$ and $\mathbf{s}'$ to be in the same conjugacy class of $G_{\mathrm{pt}}$, and $\mathbf{t}' = \textbf{a}+r\mathbf{t}-r^{-1}\textbf{a}$ for some $\textbf{a}\in G_{\mathrm{tr}}$ and $r\in G_{\mathrm{pt}}$.
-\end{enumerate}
-\paragraph{Character} 
+
 The irreducible representations of $G_{\mathrm{tr}}$ are one-dimensional, and are labeled by the momentum \begin{align}
     \textbf{k}\in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\mid k_i = 0,\frac{2\pi}{N_i},\dots,\frac{2\pi(N_i-1)}{N_i}\right\},
 \end{align}with the character defined as\begin{align}
@@ -66,6 +51,42 @@ Suppose we know all the irreducible representations of the little group $G_{\tex
     \chi_{\textbf{k},\alpha}^{G_{\mathrm{latt}}}(t,r) = \sum_{g\in G_{\mathrm{pt}}/G_{\textbf{k}}} \chi_{\textbf{k}}^{G_{\mathrm{tr}}}(gt)\chi_{\alpha}^{G_{\mathbf{k}}}(grg^{-1})
 \end{align}
 where $g$ runs over the left cosets of $G_{\textbf{k}}$ in $G_{\mathrm{pt}}$. 
+
+\paragraph{Full Symmetry Group}
+The full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The character of an element $(\mathbf{t},r,f)$ is given by\begin{align}
+    \chi_{\textbf{k},\alpha,f}^{G}(t,r,s) = \chi_{\textbf{k},\alpha}^{G_{\mathrm{latt}}}(t,r)\chi_{f}^{\mathbb{Z}_2}(s)\label{eq:full_character}
+\end{align}
+where $f = \pm 1$ labels the two irreducible representations of $\mathbb{Z}_2$. We will use the character \eqref{eq:full_character} to decompose the Hilbert space into irreducible representations of $G$.
+\section{Projectors and Adapted Basis}
+Let $i=(\mathbf{k},\alpha,f)$ label the irreducible representations of $G$. The projector onto the irreducible representation $i$ is given by\begin{align}
+    \Pi_i = \frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)g,
+\end{align}where $d_i$ is the dimension of the irreducible representation. The adapted basis of such irreducible representation is given by\begin{align}
+    \frac{1}{N_i^x}\Pi_i\ket{x} = \frac{1}{N_i^x}\frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)g\ket{x},\quad x\in \mathscr{H}.
+\end{align}
+where $N_i^x$ is the normalization factor. $\ket{x}$ is chosen as the representative of the orbit of $G$ in $\mathscr{H}$. For a deterministic output, we choose the representative $\ket{x}$ to be the one with the smallest integer value when we map $\ket{\sigma_1\dots\sigma_L}$ to an integer by\begin{align}
+    \ket{\sigma_1\dots\sigma_L} \mapsto \sum_{i=1}^L \sigma_i d^{i-1}.
+\end{align}
+
+The normalization factor $N_i^x$ is given by\begin{align}
+    (N_i^x)^2 = \mel{x}{\Pi_i}{x} = \frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)\mel{x}{g}{x}.
+\end{align}
+that is, we only need to sum over the stabilizer \begin{align}
+    \mathrm{Stab}_G(\ket{x}) = \{g\in G\mid g\ket{x} = \ket{x}\}
+\end{align}
+and the normalization factor is given by\begin{align}
+    (N_i^x)^2 = \frac{d_i}{|G|}\sum_{g\in \mathrm{Stab}_G(\ket{x})} \chi_i(g).
+\end{align}
+
+\section{Hamiltonian in Adapted Basis}
+Let $\ket{i,x} = \frac{1}{N_i^x}\Pi_i\ket{x}$ be the adapted basis of the irreducible representation $i$. Since we will dealing with invariant Hamiltonian, that is, \begin{align}
+    \frac{1}{N}\sum_{g\in G} g\mathcal{H}_{\mathrm{loc}}g^{-1}
+\end{align}
+where $N$ is the number of stabilizers of $\mathcal{H}_{\mathrm{loc}}$ under conjugate action of $G$. We have\begin{align}
+    \mel{i,x}{\mathcal{H}}{i,x'} &= \frac{1}{N_i^xN_i^{x'}}\mel{x}{\Pi_i\mathcal{H}\Pi_i}{x'}\\
+    &= \frac{1}{N_i^xN_i^{x'}}\frac{d_i^2}{|G|^2}\sum_{g,g'\in G}\frac{1}{N}\sum_{h} \chi_i(g)\chi_i(g')\mel{x}{gh\mathcal{H}_{\mathrm{loc}}h^{-1}g'^{-1}}{x'}\\
+    & = \frac{1}{N_i^xN_i^{x'}}\frac{d_i^2}{|G|^2}\sum_{g,g'\in G}\frac{1}{N}\sum_{h} \chi_i(gh^{-1})\chi_i(g'h^{-1})\mel{x}{g\mathcal{H}_{\mathrm{loc}}g'^{-1}}{x'}
+\end{align}
+
 
 \bibliography{bib.bib}
 \bibliographystyle{plain}

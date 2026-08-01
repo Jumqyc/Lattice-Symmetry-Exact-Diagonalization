@@ -26,45 +26,6 @@ from base import Model
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# helpers
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _op_in_group(op: np.ndarray, group_ops: list[np.ndarray]) -> bool:
-    '''Return True if *op* matches an operation in *group_ops*.'''
-    for g in group_ops:
-        if np.allclose(op, g):
-            return True
-    return False
-
-
-def induced_character(k: np.ndarray,
-                      irrep: str,
-                      t_vec: np.ndarray,
-                      r: np.ndarray,
-                      lg_ops: list[np.ndarray],
-                      lg,
-                      coset_reps: list[np.ndarray],
-                      ) -> complex:
-    '''
-    Evaluate  χ_{k,α}^{G_latt}(t, r)  — the induced character of the
-    full lattice group (see module docstring for the formula).
-    '''
-    chi = 0.0 + 0.0j
-    for g in coset_reps:
-        # translation part
-        chi_k = np.exp(1j * np.dot(k, g @ t_vec))
-
-        # point-group part — non-zero only when  g r g^{-1} ∈ G_k
-        grg_inv = g @ r @ g.T                     # g^{-1} = g^T (orthogonal)
-        if _op_in_group(grg_inv, lg_ops):
-            chi_alpha = lg.character(irrep, grg_inv)
-        else:
-            chi_alpha = 0.0
-        chi += chi_k * chi_alpha
-    return chi
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # test cases
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -76,48 +37,15 @@ def test_orthogonality(model: Model,
 
     Returns (num_irreps, group_order).
     '''
-    Nvec = model.Nvec
-    pt_ops = list(model.point_group)                     # G_pt elements (matrices)
-    reciprocal_basis = model.bz_cellvectors               # columns = reciprocal basis
-
-    # ── build all elements of G_latt = G_tr ⋊ G_pt ──────────────────────
-    # translations
-    from itertools import product
-    translations: list[np.ndarray] = []
-    for ns in product(*[range(Ni) for Ni in Nvec]):
-        t = sum(n * model.cell_vectors[i] for i, n in enumerate(ns))
-        translations.append(t)
-
-    # full group: (t_vec, r)
-    G_latt = [(t, r) for t in translations for r in pt_ops]
-    G_order = len(G_latt)
-
-    # ── collect all irreps ──────────────────────────────────────────────
-    # each irrep is identified by (k_index_tuple, irrep_label)
-    all_irreps: list[tuple[tuple[int, ...], str]] = []
-    char_table: dict[tuple[tuple[int, ...], str], list[complex]] = {}
-
-    for ns in product(*[range(Ni) for Ni in Nvec]):
-        k = model.momentum_vec(*ns)
-        lg, coset_reps = model.point_group.little_group(k, reciprocal_basis)
-        lg_ops = list(lg)
-
-        for irrep_label in lg.all_irrps():
-            key = (ns, irrep_label)
-            all_irreps.append(key)
-            chars = []
-            for t_vec, r in G_latt:
-                chi = induced_character(k, irrep_label, t_vec, r,
-                                        lg_ops, lg, coset_reps)
-                chars.append(chi)
-            char_table[key] = chars
+    G_order = len(model.lattice_group)
+    all_irrps = list(model.lattice_group.all_irrep.keys())
 
     # ── orthogonality:  Σ_g  χ_i(g) χ_j*(g)  =  |G| · δ_{ij} ─────────
     failures = 0
-    for i, key_i in enumerate(all_irreps):
-        chi_i = np.array(char_table[key_i])
-        for j, key_j in enumerate(all_irreps):
-            inner = np.dot(chi_i, np.conj(char_table[key_j]))
+    for i, key_i in enumerate(all_irrps):
+        chi_i = model.lattice_group.all_irrep[key_i]
+        for j, key_j in enumerate(all_irrps):
+            inner = np.dot(chi_i, np.conj(model.lattice_group.all_irrep[key_j]))
             expected = G_order if i == j else 0.0
             if abs(inner - expected) > tol:
                 print(f'  FAIL  ⟨{key_i}|{key_j}⟩ = {inner:.6f}  '
@@ -125,11 +53,11 @@ def test_orthogonality(model: Model,
                 failures += 1
 
     if failures == 0:
-        n = len(all_irreps)
+        n = len(all_irrps)
         print(f'  ✓  {n} irreps, {n*n} pairs — all orthogonal')
 
     # ── dimensionality check: Σ dim(ρ_i)² = |G| ────────────────────────
-    dims = [char_table[key][0] for key in all_irreps]   # χ_i(E) = dim
+    dims = [model.lattice_group.all_irrep[key][0] for key in all_irrps]   # χ_i(E) = dim
     dim_sum_sq = sum(abs(d) ** 2 for d in dims)
     if abs(dim_sum_sq - G_order) > tol:
         print(f'  FAIL  Σ dim² = {dim_sum_sq}  (expected {G_order})')
@@ -137,7 +65,7 @@ def test_orthogonality(model: Model,
     else:
         print(f'  ✓  Σ dim² = {dim_sum_sq:.0f} = |G| = {G_order}')
 
-    return len(all_irreps), G_order
+    return len(all_irrps), G_order
 
 
 # ══════════════════════════════════════════════════════════════════════════════
