@@ -1,10 +1,11 @@
+from abc import ABC, abstractmethod
+from typing import Optional
+from functools import reduce
+from itertools import product
+
 import numpy as np
 from numpy.typing import NDArray
 import matplotlib.pyplot as plt
-
-from abc import ABC, abstractmethod
-from functools import reduce
-from itertools import product
 
 class Model:
     '''
@@ -14,8 +15,7 @@ class Model:
                  phys_dim:int,
                  supercell_info:list[tuple[np.ndarray,int]],
                  cell_info: dict[tuple[str,int], np.ndarray], 
-                 point_group: PointGroup|None = None,
-                 spin_flip_sym: bool = False,
+                 point_group: Optional[PointGroup] = None,
                  MAX_EXTENSION = 1
                  ):
         '''
@@ -25,11 +25,11 @@ class Model:
             phys_dim: The physical dimension of the lattice.
             supercell_info: A variable number of tuples, each containing a supercell vector (as a numpy array) and its multiplicity (as an integer). Eventually, the supercell vectors will be multiplied by their respective multiplicities to form the complete supercell.
             cell_info: Additional information about the cell, provided as keyword arguments. Each key is a tuple of (atom_type, atom_index), and each value is a numpy array representing the atom's position in the cell.
+            point_group: An optional PointGroup object representing the symmetries of the lattice. If not provided, a trivial point group will be used.
             MAX_EXTENSION: The maximum extension for the periodic boundary conditions.
         '''
         self.spacial_dim = len(supercell_info[0])
         self.physical_dim = phys_dim
-        self.spin_flip_sym = spin_flip_sym
 
         if not all(isinstance(vec, np.ndarray) for vec, _ in supercell_info):
             raise TypeError("All supercell vectors must be numpy arrays.")
@@ -74,16 +74,36 @@ class Model:
         else:
             self.point_group = point_group
 
-        self.all_sym: set[SymmetryOperation] = set()
+        self.all_sym: dict[tuple[int,...], SymmetryOperation] = {}
 
         for n in product(*[range(Ni) for Ni in self.Nvec]):
-            for r in self.point_group:
-                perm = self._get_permutation_pt(r) * reduce(lambda x, y: x * y, [self._get_permutation_tr(ni) for ni in n])
-                self.all_sym.add(perm)
-                if self.spin_flip_sym:
-                    perm1 = perm.copy()
-                    perm1.spin_flip = True
-                    self.all_sym.add(perm1)
+            for i,r in enumerate(self.point_group):
+                perm = self._get_permutation_pt(r) * reduce(
+                    lambda x, y: x * y, 
+                    [self._get_permutation_tr(ni) for ni in n])
+                self.all_sym[tuple(n) + (i,) + (1,)] = perm
+
+                perm_f = perm.copy()
+                perm_f.spin_flip = True
+                self.all_sym[tuple(n) + (i,) + (-1,)] = perm_f
+
+
+    def add_coupling(self, *coupling:dict[int, np.ndarray]):
+        r'''
+        Add coupling terms to the model. Each coupling term is represented as a dictionary mapping atom indices to their corresponding coupling matrices.
+
+        For the coupling, it is assumed that the coupling will respect symmetry. In other words, the true Hamiltonian should be H_tot = 1/N \sum_{g in G} g H_0 g^{-1}, where N is the number of stabilizer elements of the coupling term. 
+        
+        Args:
+            *coupling: A variable number of dictionaries, each representing a coupling term. The keys are the atom indices (as integers), and the values are numpy arrays representing the coupling matrices. It is assumed that the coupling matrices are of shape (phys_dim, phys_dim). The operators will be multiplied in each dictionary in the order of the keys, and then summed over all dictionaries.
+        Example:
+            >>> X = np.array([[0, 1], [1, 0]]); Y = np.array([[0, -1j], [1j, 0]]); Z = np.array([[1, 0], [0, -1]])
+            >>> model.add_coupling({0: X, 1: Y}, {0: Z})
+            # this will add X_0 * Y_1 + Z_0 to the model.
+        '''
+        pass
+        
+
 
 
         
@@ -101,26 +121,22 @@ class Model:
             raise ValueError(f"Indices must in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
         return np.array(n) @ self.bz_cellvectors
         
-    
+    # TODO: rewrite this in C++ and bind it to Python.
     def _build_adapt_basis(self,
-                          all_sym:set[SymmetryOperation]|None = None,
-                          N:int|None = None
+                          N:Optional[int] = None
                           )-> dict[tuple[int],int]:
         '''
         Build an adapted basis for the lattice, taking into account the symmetries of the system
         Args:
-            all_sym: A set of SymmetryOperation objects representing all the symmetry operations of the unit cell.
             N: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
         Returns:
             A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
         '''
-        if all_sym is None:
-            all_sym = self.all_sym
 
         basis = {}
         if N is None: # if N is not provided, include all states
             for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-                for s in all_sym:
+                for s in self.all_sym.values():
                     permuted_state = tuple(s(np.array(state)))
                     if permuted_state not in basis:
                         basis[permuted_state] = len(basis)
@@ -128,7 +144,7 @@ class Model:
             for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
                 if sum(state) != N:
                     continue
-                for s in all_sym:
+                for s in self.all_sym.values():
                     permuted_state = tuple(s(np.array(state)))
                     if permuted_state not in basis:
                         basis[permuted_state] = len(basis)
@@ -136,7 +152,7 @@ class Model:
         return basis
 
 
-    def set_center_at(self, center:int | np.ndarray):
+    def set_center_at(self, center: int | np.ndarray):
         '''
         Center the lattice at a specific atom index or position.
         Args:
@@ -153,18 +169,22 @@ class Model:
         self.extended_cell = [(pos - center_pos, s, idx) for pos, s, idx in self.extended_cell]
         self.unit_cell_idx = [(pos - center_pos, s, idx) for pos, s, idx in self.unit_cell_idx]
 
-    def plot(self, ax=None):
+    def plot(self, 
+             ax:Optional[plt.Axes]=None,
+             extend:bool = False) -> plt.Axes:
         '''
         Plot the lattice structure.
         Args:
             ax: A matplotlib Axes object. If None, a new figure and axes will be created.
+            extend: If True, plot the extended cell; otherwise, plot only the unit cell.
         '''
         if ax is None:
             _, ax = plt.subplots(figsize=(6, 6))
-        
-        for pos, _, idx in self.extended_cell:
-            ax.scatter(*pos, alpha=0.6,color='blue')
-            ax.text(*pos, str(idx), fontsize=8, ha='center', va='center')
+
+        if extend:
+            for pos, _, idx in self.extended_cell:
+                ax.scatter(*pos, alpha=0.6,color='blue')
+                ax.text(*pos, str(idx), fontsize=8, ha='center', va='center')
 
         for pos, _, idx in self.unit_cell_idx:
             ax.scatter(*pos, color='red', alpha=0.8)
@@ -205,7 +225,10 @@ class Model:
             else:
                 transformed_pos = arr @ pos
             permuted[idx] = self._get_idx(transformed_pos, s)
-        return SymmetryOperation(permuted, physical_dim=self.physical_dim, spin_flip=False)
+        return SymmetryOperation(permuted, 
+                                 physical_dim=self.physical_dim, 
+                                 spin_flip=False)
+    
     def _get_permutation_tr(self, dir:int)-> SymmetryOperation:
         '''
         Given a translation vector dir, return the permutation of the atoms in the unit cell that corresponds to this translation.
@@ -247,7 +270,7 @@ class SymmetryOperation:
         return SymmetryOperation(self.perm[other.perm], 
                                  physical_dim=self.physical_dim, 
                                  spin_flip=self.spin_flip ^ other.spin_flip)
-    def inv(self)-> 'SymmetryOperation':
+    def inv(self)->SymmetryOperation:
         inv_perm = np.argsort(self.perm)
         return SymmetryOperation(inv_perm,
                                  physical_dim=self.physical_dim,
@@ -269,15 +292,13 @@ class SymmetryOperation:
         return hash(tuple(self.perm))
 
 
-
-
 class PointGroup(ABC):
     '''
     Class representing a group of rotations and inversion. 
     '''
     @abstractmethod
     def little_group(self, k:np.ndarray,
-                     reciprocal_basis:np.ndarray|None = None
+                     reciprocal_basis:Optional[np.ndarray] = None
                      ) -> tuple['PointGroup', list[np.ndarray]]:
         '''
         Return the little group of a given momentum k.
@@ -350,7 +371,7 @@ class TrivialGroup(PointGroup):
         return ['A']
 
     def little_group(self, k:np.ndarray,
-                     reciprocal_basis:np.ndarray|None = None
+                     reciprocal_basis:Optional[np.ndarray] = None
                      ) -> tuple['PointGroup', list[np.ndarray]]:
         return self, [np.eye(len(k))]
 

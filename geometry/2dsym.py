@@ -258,12 +258,13 @@ class C3(CyclicGroup):
     def character(self, irrp: str, op: np.ndarray) -> complex:
         k = self._get_rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
         omega = np.exp(2j * np.pi / 3)
-        if irrp == 'A':
-            return 1.0
-        if irrp == 'E1':
-            return omega ** k
-        if irrp == 'E2':
-            return omega ** (2 * k)
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'E1':
+                return omega ** k
+            case 'E2':
+                return omega ** (2 * k)
         raise ValueError(f"Unknown irreducible representation: {irrp}")
 
 
@@ -293,14 +294,15 @@ class C4(CyclicGroup):
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
         k = self._get_rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
-        if irrp == 'A':
-            return 1.0
-        if irrp == 'B':
-            return 1.0 if k % 2 == 0 else -1.0
-        if irrp == 'E1':
-            return 1j ** k
-        if irrp == 'E2':
-            return (-1j) ** k
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'B':
+                return 1.0 if k % 2 == 0 else -1.0
+            case 'E1':
+                return 1j ** k
+            case 'E2':
+                return (-1j) ** k
         raise ValueError(f"Unknown irreducible representation: {irrp}")
 
 
@@ -336,18 +338,19 @@ class C6(CyclicGroup):
         k = self._get_rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
         omega = np.exp(1j * np.pi / 3)     # exp(πi/3)
 
-        if irrp == 'A':
-            return 1.0
-        if irrp == 'B':
-            return 1.0 if k % 2 == 0 else -1.0
-        if irrp == 'E1':
-            return omega ** k
-        if irrp == 'E2':
-            return omega ** (2 * k)
-        if irrp == 'E1*':
-            return omega ** (5 * k)
-        if irrp == 'E2*':
-            return omega ** (4 * k)
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'B':
+                return 1.0 if k % 2 == 0 else -1.0
+            case 'E1':
+                return omega ** k
+            case 'E2':
+                return omega ** (2 * k)
+            case 'E1*':
+                return omega ** (5 * k)
+            case 'E2*':
+                return omega ** (4 * k)
         raise ValueError(f"Unknown irreducible representation: {irrp}")
 
 
@@ -489,16 +492,18 @@ class D3(DihedralGroup):
         cls = self._conjugacy_class(op)
         is_rot = self._is_rotation(op)
 
-        if irrp == 'A1':
-            return 1.0
-        if irrp == 'A2':
-            return 1.0 if is_rot else -1.0
-        if irrp == 'E':
-            if cls == 'E':
-                return 2.0
-            if cls == 'Cn':
-                return -1.0
-            return 0.0                      # reflections
+        match irrp:
+            case 'A1':
+                return 1.0
+            case 'A2':
+                return 1.0 if is_rot else -1.0
+            case 'E':
+                if cls == 'E':
+                    return 2.0
+                if cls == 'Cn':
+                    return -1.0
+                return 0.0                      # reflections
+                    # reflections
         raise ValueError(f"Unknown irreducible representation: {irrp}")
 
 
@@ -531,27 +536,26 @@ class D4(DihedralGroup):
         is_rot = self._is_rotation(op)
         k = self._get_rotation_power(op)       # rotation power / axis index (see docstring)
         cls = self._conjugacy_class(op)
-
-        if irrp == 'A1':
-            return 1.0
-        if irrp == 'A2':
-            return 1.0 if is_rot else -1.0
-        if irrp == 'B1':
-            # +1 on even powers / vertex reflections; −1 on odd powers / edge reflections
-            return 1.0 if k % 2 == 0 else -1.0
-        if irrp == 'B2':
-            if is_rot:
+        match irrp:
+            case 'A1':
+                return 1.0
+            case 'A2':
+                return 1.0 if is_rot else -1.0
+            case 'B1':
+                # +1 on even powers / vertex reflections; −1 on odd powers / edge reflections
                 return 1.0 if k % 2 == 0 else -1.0
-            else:
-                return -1.0 if k % 2 == 0 else 1.0   # swapped relative to B₁ for reflections
-        if irrp == 'E':
-            if cls == 'E':
-                return 2.0
-            if cls == 'C2':
-                return -2.0
-            return 0.0                       # C₄ or any reflection
+            case 'B2':
+                if is_rot:
+                    return 1.0 if k % 2 == 0 else -1.0
+                else:
+                    return -1.0 if k % 2 == 0 else 1.0   # swapped relative to B₁ for reflections
+            case 'E':
+                if cls == 'E':
+                    return 2.0
+                if cls == 'C2':
+                    return -2.0
+                return 0.0                       # C₄ or any reflection
         raise ValueError(f"Unknown irreducible representation: {irrp}")
-
 
 # ── D₆ ──────────────────────────────────────────────────────────────────────
 
@@ -584,27 +588,26 @@ class D6(DihedralGroup):
         is_rot = self._is_rotation(op)
         k = self._get_rotation_power(op)       # rotation power / axis index
 
-        if irrp == 'A1':
-            return 1.0
-        if irrp == 'A2':
-            return 1.0 if is_rot else -1.0
-        if irrp == 'B1':
-            # +1 for even k, −1 for odd k  (both rotations and reflections)
-            return 1.0 if k % 2 == 0 else -1.0
-        if irrp == 'B2':
-            if is_rot:
+        match irrp:
+            case 'A1':
+                return 1.0
+            case 'A2':
+                return 1.0 if is_rot else -1.0
+            case 'B1':
+                # +1 for even k, −1 for odd k  (both rotations and reflections)
                 return 1.0 if k % 2 == 0 else -1.0
-            else:
-                return -1.0 if k % 2 == 0 else 1.0
-
-        # ── 2D irreps ─────────────────────────────────────────────────
-        if irrp == 'E1':
-            if is_rot:
-                return 2.0 * np.cos(2 * np.pi * k / self.n)
-            return 0.0
-        if irrp == 'E2':
-            if is_rot:
-                return 2.0 * np.cos(4 * np.pi * k / self.n)
-            return 0.0
+            case 'B2':
+                if is_rot:
+                    return 1.0 if k % 2 == 0 else -1.0
+                else:
+                    return -1.0 if k % 2 == 0 else 1.0
+            case 'E1':
+                if is_rot:
+                    return 2.0 * np.cos(2 * np.pi * k / self.n)
+                return 0.0
+            case 'E2':
+                if is_rot:
+                    return 2.0 * np.cos(4 * np.pi * k / self.n)
+                return 0.0
 
         raise ValueError(f"Unknown irreducible representation: {irrp}")
