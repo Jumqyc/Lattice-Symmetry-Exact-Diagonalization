@@ -34,6 +34,22 @@ def reflection(rad: float) -> np.ndarray:
                      [s, -c]])
 
 
+def _matrix_to_flat(op: np.ndarray) -> tuple[int | float, ...]:
+    '''
+    Convert a matrix to a flattened tuple suitable for hashing.
+    Entries within 1e-10 of an integer are stored as ``int``;
+    others are rounded to 12 decimal places and stored as ``float``.
+    '''
+    flat: list[int | float] = []
+    for x in op.flat:
+        r = round(x)
+        if abs(x - r) < 1e-10:
+            flat.append(int(r))
+        else:
+            flat.append(round(float(x), 12))
+    return tuple(flat)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Internal base class for 2D point groups
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -41,16 +57,31 @@ def reflection(rad: float) -> np.ndarray:
 class _Generic2DPointGroup(PointGroup):
     '''
     Base class for 2D point groups that store their operations explicitly.
-    Handles the iterator protocol and provides fallback implementations of
-    ``all_irrps`` / ``character`` for unnamed subgroups returned by
-    ``little_group``.
+
+    Operations are stored internally as ``tuple[tuple[int|float,…],…]``
+    (flattened data, one tuple per element) together with a single
+    ``_shape`` shared by all elements, so the group is hashable.
+    Iteration still yields ``np.ndarray`` matrices.
     '''
 
     def __init__(self, operations: list[np.ndarray]):
-        self._operations = operations
+        if operations:
+            self._shape: tuple[int, ...] = operations[0].shape
+        else:
+            self._shape = ()
+        self._operations: tuple[tuple[int | float, ...], ...] = tuple(
+            _matrix_to_flat(op) for op in operations
+        )
         self._iter_index = 0
 
-    # ── iteration over group elements (as 2×2 matrices) ──────────────────
+    def __hash__(self):
+        return hash((self._shape, self._operations))
+
+    def __eq__(self, other):
+        if not isinstance(other, _Generic2DPointGroup):
+            return NotImplemented
+        return (self._shape == other._shape
+                and self._operations == other._operations)
 
     def __iter__(self):
         self._iter_index = 0
@@ -59,9 +90,9 @@ class _Generic2DPointGroup(PointGroup):
     def __next__(self) -> np.ndarray:
         if self._iter_index >= len(self._operations):
             raise StopIteration
-        op = self._operations[self._iter_index]
+        data = self._operations[self._iter_index]
         self._iter_index += 1
-        return op
+        return np.array(data, dtype=np.float64).reshape(self._shape)
 
     # ── fallback irrep / character (for generic subgroups) ───────────────
 
@@ -84,23 +115,24 @@ class _Generic2DPointGroup(PointGroup):
         Otherwise exact equality ``op @ k ≈ k`` is used.
         '''
         eye = np.eye(k.shape[0]) if k.ndim == 1 else np.eye(2)
+        ops = list(self)
 
         if reciprocal_basis is None:
             if np.allclose(k, 0):
                 return self, [eye]
-            preserving = [op for op in self._operations if np.allclose(op @ k, k)]
-            others     = [op for op in self._operations if not np.allclose(op @ k, k)]
+            preserving = [op for op in ops if np.allclose(op @ k, k)]
+            others     = [op for op in ops if not np.allclose(op @ k, k)]
         else:
-            preserving = [op for op in self._operations
+            preserving = [op for op in ops
                           if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in self._operations
+            others     = [op for op in ops
                           if not self._k_preserved(op, k, reciprocal_basis)]
 
         if len(preserving) <= 1:
             return TrivialGroup(), others[:1] if others else [eye]
 
         sub = _Generic2DPointGroup(preserving)
-        n_coset = (len(self._operations) // len(preserving)
+        n_coset = (len(ops) // len(preserving)
                    if len(preserving) > 0 else 1)
         return sub, others[:n_coset] if others else [eye]
 
@@ -132,7 +164,7 @@ class _Generic2DPointGroup(PointGroup):
 
     def _find_op_index(self, op: np.ndarray) -> int:
         '''Return the index in ``self._operations`` that matches *op*.'''
-        for i, g in enumerate(self._operations):
+        for i, g in enumerate(self):
             if np.allclose(g, op):
                 return i
         raise ValueError(f"Operation {op} not found in group.")
@@ -178,13 +210,15 @@ class CyclicGroup(_Generic2DPointGroup):
         if reciprocal_basis is None and np.allclose(k, 0):
             return self, [np.eye(2)]
 
+        ops = list(self)
+
         if reciprocal_basis is None:
-            preserving = [op for op in self._operations if np.allclose(op @ k, k)]
-            others     = [op for op in self._operations if not np.allclose(op @ k, k)]
+            preserving = [op for op in ops if np.allclose(op @ k, k)]
+            others     = [op for op in ops if not np.allclose(op @ k, k)]
         else:
-            preserving = [op for op in self._operations
+            preserving = [op for op in ops
                           if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in self._operations
+            others     = [op for op in ops
                           if not self._k_preserved(op, k, reciprocal_basis)]
 
         m = len(preserving)
@@ -445,24 +479,26 @@ class DihedralGroup(_Generic2DPointGroup):
         if reciprocal_basis is None and np.allclose(k, 0):
             return self, [np.eye(2)]
 
+        ops = list(self)
+
         if reciprocal_basis is None:
-            preserving = [op for op in self._operations if np.allclose(op @ k, k)]
-            others     = [op for op in self._operations if not np.allclose(op @ k, k)]
+            preserving = [op for op in ops if np.allclose(op @ k, k)]
+            others     = [op for op in ops if not np.allclose(op @ k, k)]
         else:
-            preserving = [op for op in self._operations
+            preserving = [op for op in ops
                           if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in self._operations
+            others     = [op for op in ops
                           if not self._k_preserved(op, k, reciprocal_basis)]
 
         m = len(preserving)
 
         if m == 1:
             return TrivialGroup(), others[:1] if others else [np.eye(2)]
-        if m == len(self._operations):
+        if m == len(ops):
             return self, [np.eye(2)]
 
         sub = _Generic2DPointGroup(preserving)
-        return sub, others[:len(self._operations) // m] if others else [np.eye(2)]
+        return sub, others[:len(ops) // m] if others else [np.eye(2)]
 
 
 # ── D₃ ──────────────────────────────────────────────────────────────────────

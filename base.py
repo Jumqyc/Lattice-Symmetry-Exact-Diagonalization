@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 from functools import reduce
 from itertools import product
+from typing import Optional, Iterator
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
-import matplotlib.pyplot as plt
+
+
 
 class Model:
     '''
@@ -28,13 +30,13 @@ class Model:
             point_group: An optional PointGroup object representing the symmetries of the lattice. If not provided, a trivial point group will be used.
             MAX_EXTENSION: The maximum extension for the periodic boundary conditions.
         '''
-        self.spacial_dim = len(supercell_info[0])
+        self.spatial_dim = len(supercell_info[0])
         self.physical_dim = phys_dim
 
         if not all(isinstance(vec, np.ndarray) for vec, _ in supercell_info):
             raise TypeError("All supercell vectors must be numpy arrays.")
-        if not all(len(vec) == self.spacial_dim for vec, _ in supercell_info):
-            raise ValueError("All supercell vectors must have the same dimension {}.".format(self.spacial_dim))
+        if not all(len(vec) == self.spatial_dim for vec, _ in supercell_info):
+            raise ValueError("All supercell vectors must have the same dimension {}.".format(self.spatial_dim))
         if not all(isinstance(m, int) and m > 0 for _, m in supercell_info):
             raise ValueError("All multiplicities must be positive integers.")
 
@@ -42,7 +44,7 @@ class Model:
         self.Nvec: NDArray[np.int64] = np.array([m for _, m in supercell_info])
         self.supercell_vectors: NDArray[np.float64] = self.cell_vectors * self.Nvec[:, np.newaxis]
 
-        if not self.cell_vectors.shape == (self.spacial_dim, self.spacial_dim):
+        if not self.cell_vectors.shape == (self.spatial_dim, self.spatial_dim):
             raise ValueError("The number of supercell vectors must match the spatial dimension.")
 
         self.bz_cellvectors = 2*np.pi*np.linalg.inv(self.supercell_vectors).T
@@ -64,7 +66,7 @@ class Model:
             # to avoid modifying the list while iterating over it
             for n in product(
                         range(-MAX_EXTENSION, MAX_EXTENSION + 1),
-                        repeat=self.spacial_dim):
+                        repeat=self.spatial_dim):
                 self.extended_cell.append(
                     (pos + np.array(n) @ self.supercell_vectors, s, idx)
                 )
@@ -74,39 +76,30 @@ class Model:
         else:
             self.point_group = point_group
 
-        self.all_sym: dict[tuple[int,...], SymmetryOperation] = {}
 
-        for n in product(*[range(Ni) for Ni in self.Nvec]):
-            for i,r in enumerate(self.point_group):
-                perm = self._get_permutation_pt(r) * reduce(
-                    lambda x, y: x * y, 
-                    [self._get_permutation_tr(ni) for ni in n])
-                self.all_sym[tuple(n) + (i,) + (1,)] = perm
+        self.all_perms = [self._get_permutation_pt(op) * 
+                          reduce(lambda x, y: x * y, 
+                            [self._get_permutation_tr(i) ** ni for i, ni in enumerate(n)])
+                          for op in self.point_group 
+                          for n in product(*self.Nvec)]
 
-                perm_f = perm.copy()
-                perm_f.spin_flip = True
-                self.all_sym[tuple(n) + (i,) + (-1,)] = perm_f
+        self.couplings: list[Coupling] = []
+    
+    def add_coupling(self,
+                     coupling: Coupling
+                     ):
+        if min(coupling.sites) < 0 or max(coupling.sites) >= self.size_of_unit_cell:
+            raise ValueError(f"Coupling sites {coupling.sites} are out of bounds for unit cell size {self.size_of_unit_cell}.")
 
+        for i, existing in enumerate(self.couplings):
+            if existing.sites == coupling.sites:
+                self.couplings[i] = existing + coupling
+                return
 
-    def add_coupling(self, *coupling:dict[int, np.ndarray]):
-        r'''
-        Add coupling terms to the model. Each coupling term is represented as a dictionary mapping atom indices to their corresponding coupling matrices.
-
-        For the coupling, it is assumed that the coupling will respect symmetry. In other words, the true Hamiltonian should be H_tot = 1/N \sum_{g in G} g H_0 g^{-1}, where N is the number of stabilizer elements of the coupling term. 
-        
-        Args:
-            *coupling: A variable number of dictionaries, each representing a coupling term. The keys are the atom indices (as integers), and the values are numpy arrays representing the coupling matrices. It is assumed that the coupling matrices are of shape (phys_dim, phys_dim). The operators will be multiplied in each dictionary in the order of the keys, and then summed over all dictionaries.
-        Example:
-            >>> X = np.array([[0, 1], [1, 0]]); Y = np.array([[0, -1j], [1j, 0]]); Z = np.array([[1, 0], [0, -1]])
-            >>> model.add_coupling({0: X, 1: Y}, {0: Z})
-            # this will add X_0 * Y_1 + Z_0 to the model.
-        '''
-        pass
-        
+        self.couplings.append(coupling)
 
 
 
-        
     def momentum_vec(self, *n:int):
         '''
         Compute the momentum vector in the Brillouin zone given a set of indices.
@@ -115,46 +108,58 @@ class Model:
         Returns:
             A numpy array representing the momentum vector in the Brillouin zone.
         '''
-        if len(n) != self.spacial_dim:
-            raise ValueError(f"Expected {self.spacial_dim} indices, got {len(n)}.")
+        if len(n) != self.spatial_dim:
+            raise ValueError(f"Expected {self.spatial_dim} indices, got {len(n)}.")
         if not all((0 <= ni < Ni) for ni, Ni in zip(n, self.Nvec)):
-            raise ValueError(f"Indices must in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
+            raise ValueError(f"Indices must be in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
         return np.array(n) @ self.bz_cellvectors
         
     # TODO: rewrite this in C++ and bind it to Python.
-    def _build_adapt_basis(self,
-                          N:Optional[int] = None
+    def _build_adapted_basis(self,
+                          Sztot:Optional[int] = None,
+                          spin_flip:bool = False
                           )-> dict[tuple[int],int]:
         '''
         Build an adapted basis for the lattice, taking into account the symmetries of the system
         Args:
-            N: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
+            Sztot: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
         Returns:
             A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
         '''
 
-        basis = {}
-        if N is None: # if N is not provided, include all states
-            for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-                for s in self.all_sym.values():
-                    permuted_state = tuple(s(np.array(state)))
-                    if permuted_state not in basis:
-                        basis[permuted_state] = len(basis)
-        else: # if N is provided, only include states with total number of particles equal to N
-            for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-                if sum(state) != N:
-                    continue
-                for s in self.all_sym.values():
-                    permuted_state = tuple(s(np.array(state)))
-                    if permuted_state not in basis:
-                        basis[permuted_state] = len(basis)
-
-        return basis
+        def get_state(Sztot:Optional[int]) -> Iterator[tuple[int, ...]]:
+            if Sztot is None:
+                for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+                    yield state
+            else:
+                for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+                    if sum(state) == Sztot:
+                        yield state
+        d = {}
+        for basis in get_state(Sztot):
+            for sym in self.all_perms:
+                transformed = tuple(sym(np.array(basis)))
+                if transformed in d:
+                    break
+                if spin_flip:
+                    flipped = tuple(self.physical_dim - 1 - np.array(transformed))
+                    if flipped in d:
+                        break
+            else:
+                d[tuple(basis)] = len(d)
+            
+        return d
 
 
     def set_center_at(self, center: int | np.ndarray):
         '''
         Center the lattice at a specific atom index or position.
+
+        .. note::
+            This only shifts stored positions; it does **not** rebuild
+            ``all_perms`` or other derived quantities.  Call this before
+            adding couplings or building the adapted basis.
+
         Args:
             center: The index of the atom (int), or a numpy array position,
                     to center the lattice around.
@@ -193,7 +198,6 @@ class Model:
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_title('Lattice Structure')
-        ax.legend()
         ax.set_aspect('equal', adjustable='box')
         return ax
 
@@ -205,7 +209,7 @@ class Model:
                 return idx
         raise ValueError(f"Position {pos} not found in unit cell nor extended cell.")
 
-    def _get_permutation_pt(self, arr:np.ndarray)-> SymmetryOperation:
+    def _get_permutation_pt(self, arr:np.ndarray)-> Permutation:
         '''
         Given a point group transformation arr, return the permutation of the atoms in the unit cell that corresponds to this transformation.
         Accepts either a (d,d) matrix or a 0-d scalar (identity for any dimension).
@@ -214,70 +218,195 @@ class Model:
             # TrivialGroup identity: scalar 1 → acts as identity for any dimension
             pass
         else:
-            assert arr.shape == (self.spacial_dim, self.spacial_dim), \
-            f"Transformation matrix must be of shape ({self.spacial_dim}, {self.spacial_dim}), got {arr.shape}."
+            assert arr.shape == (self.spatial_dim, self.spatial_dim), \
+                f"Transformation matrix must be of shape ({self.spatial_dim}, {self.spatial_dim}), got {arr.shape}."
 
         permuted = np.zeros(self.size_of_unit_cell, dtype=int)
 
         for pos, s, idx in self.unit_cell_idx:
-            if arr.ndim == 0:
-                transformed_pos = arr * pos       # scalar identity
-            else:
-                transformed_pos = arr @ pos
+            transformed_pos = arr * pos if arr.ndim == 0 else arr @ pos
             permuted[idx] = self._get_idx(transformed_pos, s)
-        return SymmetryOperation(permuted, 
-                                 physical_dim=self.physical_dim, 
-                                 spin_flip=False)
+        return Permutation(permuted)
     
-    def _get_permutation_tr(self, dir:int)-> SymmetryOperation:
+    def _get_permutation_tr(self, dir:int)-> Permutation:
         '''
         Given a translation vector dir, return the permutation of the atoms in the unit cell that corresponds to this translation.
         '''
-        assert 0 <= dir < self.spacial_dim, f"Translation direction must be between 0 and {self.spacial_dim-1}."
+        assert 0 <= dir < self.spatial_dim, f"Translation direction must be between 0 and {self.spatial_dim-1}."
 
         translated = np.zeros(self.size_of_unit_cell, dtype=int)
         for pos, s, idx in self.unit_cell_idx:
             translated[idx] = self._get_idx(pos + self.cell_vectors[dir], s)
-        return SymmetryOperation(translated, physical_dim=self.physical_dim, spin_flip=False)
+        return Permutation(translated)
 
-    
-class SymmetryOperation:
+class Coupling:
+    '''
+    Class representing a coupling (interaction term) in the lattice.
+
+    A ``Coupling`` stores one or more products of local operators acting on
+    specific sites.  Each product is called a *term*.
+
+    For example, the Heisenberg XX+YY+ZZ coupling on bond (0,1) is::
+
+        Coupling(2, (0, 1), (X, X), (Y, Y), (Z, Z))
+
+    Individual terms on the same sites can be added::
+
+        Coupling(2, (0, 1), (X, X)) + Coupling(2, (0, 1), (Y, Y))
+    '''
+
+    def __init__(self,
+                 phys_dim: int,
+                 sites: tuple[int, ...],
+                 *terms: tuple[np.ndarray, ...]):
+        r'''
+        Initialize a Coupling object.
+
+        Args:
+            phys_dim: The local Hilbert space dimension (e.g. 2 for spin-½).
+            sites: Indices of the sites the operators act on.
+            *terms: One or more tuples of operators, each of length
+                    ``len(sites)``.  Every operator must be a
+                    ``(phys_dim, phys_dim)`` array.
+
+        Raises:
+            ValueError: if no terms are given, or if the number of operators
+                        in a term does not match the number of sites, or if
+                        an operator has the wrong shape.
+        '''
+        if not terms:
+            raise ValueError("At least one operator term is required.")
+
+        for ops in terms:
+            if len(ops) != len(sites):
+                raise ValueError(
+                    f"Each term must have {len(sites)} operators, got {len(ops)}."
+                )
+            for op in ops:
+                if op.shape != (phys_dim, phys_dim):
+                    raise ValueError(
+                        f"All operators must have shape ({phys_dim}, {phys_dim}), "
+                        f"got {op.shape}."
+                    )
+
+        self.phys_dim = phys_dim
+        self.sites = sites
+        self.terms: list[tuple[np.ndarray, ...]] = list(terms)
+
+    # ── coupling_pair ─────────────────────────────────────────────────────
+
+    def coupling_pair(self,
+                      state: tuple[int, ...]
+                      ) -> dict[tuple[int, ...], complex]:
+        '''
+        Apply the coupling to a basis state.
+
+        For each term in the coupling, this computes every basis state
+        reachable from *state* and the corresponding coefficient (matrix
+        element).  Coefficients for the same final state are summed, so the
+        result is always in simplest form.
+
+        Args:
+            state: A tuple of integers representing the initial basis state.
+                   Its length must equal the total number of sites in the
+                   system.
+
+        Returns:
+            A dict mapping each reachable basis state to its coefficient.
+
+        Example:
+            >>> X = np.array([[0, 1], [1, 0]])
+            >>> Y = np.array([[0, -1j], [1j, 0]])
+            >>> Z = np.array([[1, 0], [0, -1]])
+
+            >>> zz = Coupling(2, (0, 1), (Z, Z))
+            >>> zz.coupling_pair((0, 1))
+            {(0, 1): (-1+0j)}
+
+            >>> xx = Coupling(2, (0, 1), (X, X))
+            >>> xx.coupling_pair((0, 1, 1)) # does not act on site 2
+            {(1, 0, 1): (1+0j)}
+
+            >>> heis = Coupling(2, (0, 1), (X, X), (Y, Y), (Z, Z))
+            >>> heis.coupling_pair((0, 0))
+            {(0, 0): (1+0j)}
+        '''
+        results: dict[tuple[int, ...], complex] = {}
+
+        for ops in self.terms:
+            per_site: list[list[tuple[int, complex]]] = []
+            for site, op in zip(self.sites, ops):
+                col = op[:, state[site]]
+                nz = np.flatnonzero(col)
+                per_site.append([(int(idx), complex(col[idx])) for idx in nz])
+
+            for combo in product(*per_site):
+                new_state = list(state)
+                coeff = complex(1.0)
+                for (new_val, amp), site in zip(combo, self.sites):
+                    new_state[site] = new_val
+                    coeff *= amp
+                key = tuple(new_state)
+                results[key] = results.get(key, 0j) + coeff
+
+        return results
+
+    def __add__(self, other: 'Coupling') -> 'Coupling':
+        '''
+        Add two couplings.  The two couplings must act on the same sites
+        and have the same ``phys_dim``.
+        '''
+        if not isinstance(other, Coupling):
+            return NotImplemented
+        if self.sites != other.sites:
+            raise ValueError(
+                f"Cannot add couplings on different sites: "
+                f"{self.sites} vs {other.sites}"
+            )
+        if self.phys_dim != other.phys_dim:
+            raise ValueError(
+                f"Cannot add couplings with different phys_dim: "
+                f"{self.phys_dim} vs {other.phys_dim}"
+            )
+        return Coupling(self.phys_dim, self.sites, *self.terms, *other.terms)
+
+
+    def __repr__(self) -> str:
+        n_terms = len(self.terms)
+        sites_str = str(self.sites)
+        return (f"Coupling(phys_dim={self.phys_dim}, sites={sites_str}, "
+                f"terms={n_terms})")
+
+
+class Permutation:
     '''
     Class representing a symmetry operation on atoms in the lattice.
     '''
     def __init__(self, 
-                 perm: np.ndarray,
-                 physical_dim: int,
-                 spin_flip: bool = False):
-        self.perm = perm
+                 perm: np.ndarray):
+        self.perm:NDArray[np.int64] = perm
         self.size = len(perm)
-        self.spin_flip = spin_flip
-        self.physical_dim = physical_dim
         if not np.array_equal(np.sort(perm), np.arange(self.size)):
             raise ValueError("Invalid permutation array. It must contain all integers from 0 to size-1 exactly once.")
 
-    def __call__(self, x:np.ndarray) -> np.ndarray:
-        if not self.spin_flip:
+    def __call__(self, x:np.ndarray|int) -> np.ndarray|int:
+        if isinstance(x, int):
+            return self.perm[x]
+        elif isinstance(x, np.ndarray):
             return x[self.perm]
-        else:
-            return self.physical_dim - 1 - x[self.perm] 
 
-    def __mul__(self, other: 'SymmetryOperation') -> 'SymmetryOperation':
-        if not isinstance(other, SymmetryOperation):
+    def __mul__(self, other: 'Permutation') -> 'Permutation':
+        if not isinstance(other, Permutation):
             raise TypeError("Can only multiply with another SymmetryOperation.")
         if self.size != other.size:
             raise ValueError("SymmetryOperations must be of the same size to multiply.")
-        return SymmetryOperation(self.perm[other.perm], 
-                                 physical_dim=self.physical_dim, 
-                                 spin_flip=self.spin_flip ^ other.spin_flip)
-    def inv(self)->SymmetryOperation:
+        return Permutation(self.perm[other.perm])
+    def inv(self)->Permutation:
         inv_perm = np.argsort(self.perm)
-        return SymmetryOperation(inv_perm,
-                                 physical_dim=self.physical_dim,
-                                 spin_flip=self.spin_flip)
-    def __pow__(self, power: int) -> 'SymmetryOperation':
+        return Permutation(inv_perm)
+    def __pow__(self, power: int) -> 'Permutation':
         if power == 0:
-            return SymmetryOperation(np.arange(self.size), self.physical_dim, self.spin_flip)
+            return Permutation(np.arange(self.size))
         elif power > 0:
             result = self
             for _ in range(power - 1):
@@ -285,8 +414,8 @@ class SymmetryOperation:
             return result
         else:
             return self.inv() ** (-power)
-    def copy(self) -> SymmetryOperation:
-        return SymmetryOperation(self.perm.copy(), self.physical_dim, self.spin_flip)
+    def copy(self) -> Permutation:
+        return Permutation(self.perm.copy())
 
     def __hash__(self):
         return hash(tuple(self.perm))
@@ -321,7 +450,7 @@ class PointGroup(ABC):
         raise NotImplementedError("This method should be implemented in subclasses.")
         
     @abstractmethod
-    def all_irrps(self) -> list[str]:
+    def all_irreps(self) -> list[str]:
         '''
         Return a list of all irreducible representations of the point group.
         Returns:
@@ -331,12 +460,12 @@ class PointGroup(ABC):
     
     @abstractmethod
     def character(self, 
-                  irrp:str, 
+                  irrep:str, 
                   op:np.ndarray) -> complex:
         '''
         Return the character of a given irreducible representation for a specific group operation.
         Args:
-            irrp: A string representing the label of the irreducible representation.
+            irrep: A string representing the label of the irreducible representation.
             op: A numpy array representing the group operation (rotation or inversion).
         Returns:
             A complex representing the character of the irreducible representation for the given operation.
@@ -362,12 +491,22 @@ class TrivialGroup(PointGroup):
     '''
     A trivial point group containing only the identity operation.
 
-    The only irrp of this group is 'A', which has a character of 1 for the identity operation.
+    The only irrep of this group is 'A', which has a character of 1 for the identity operation.
     '''
     def __init__(self):
         self._iterated = False
+        self._shape: tuple[int, ...] = ()
+        self._operations: tuple[tuple[int | float, ...], ...] = ((1,),)
 
-    def all_irrps(self) -> list[str]:
+    def __hash__(self):
+        return hash((self._shape, self._operations))
+
+    def __eq__(self, other):
+        if not isinstance(other, TrivialGroup):
+            return NotImplemented
+        return True
+
+    def all_irreps(self) -> list[str]:
         return ['A']
 
     def little_group(self, k:np.ndarray,
@@ -375,11 +514,11 @@ class TrivialGroup(PointGroup):
                      ) -> tuple['PointGroup', list[np.ndarray]]:
         return self, [np.eye(len(k))]
 
-    def character(self, irrp:str, op:np.ndarray) -> complex:
-        if irrp == 'A':
+    def character(self, irrep:str, op:np.ndarray) -> complex:
+        if irrep == 'A':
             return 1.0
         else:
-            raise ValueError(f"Unknown irreducible representation: {irrp}")
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
 
     def __iter__(self):
         self._iterated = False
@@ -389,4 +528,4 @@ class TrivialGroup(PointGroup):
         if self._iterated:
             raise StopIteration
         self._iterated = True
-        return np.array(1)
+        return np.array(self._operations[0], dtype=np.float64).reshape(self._shape)
