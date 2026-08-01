@@ -1,28 +1,35 @@
 import numpy as np
+from numpy.typing import NDArray
 import matplotlib.pyplot as plt
 
 from abc import ABC, abstractmethod
+from functools import reduce
 from itertools import product
 
-class Lattice:
+class Model:
     '''
     Class representing a lattice structure. 
     '''
     def __init__(self, 
+                 phys_dim:int,
                  supercell_info:list[tuple[np.ndarray,int]],
                  cell_info: dict[tuple[str,int], np.ndarray], 
                  point_group: PointGroup|None = None,
+                 spin_flip_sym: bool = False,
                  MAX_EXTENSION = 1
                  ):
         '''
         Initialize a Lattice object. A lattice (supercell) is defined by its reciprocal vectors and their multiplicities, as well as additional cell information.
         
         Args:
+            phys_dim: The physical dimension of the lattice.
             supercell_info: A variable number of tuples, each containing a supercell vector (as a numpy array) and its multiplicity (as an integer). Eventually, the supercell vectors will be multiplied by their respective multiplicities to form the complete supercell.
             cell_info: Additional information about the cell, provided as keyword arguments. Each key is a tuple of (atom_type, atom_index), and each value is a numpy array representing the atom's position in the cell.
             MAX_EXTENSION: The maximum extension for the periodic boundary conditions.
         '''
         self.spacial_dim = len(supercell_info[0])
+        self.physical_dim = phys_dim
+        self.spin_flip_sym = spin_flip_sym
 
         if not all(isinstance(vec, np.ndarray) for vec, _ in supercell_info):
             raise TypeError("All supercell vectors must be numpy arrays.")
@@ -31,8 +38,9 @@ class Lattice:
         if not all(isinstance(m, int) and m > 0 for _, m in supercell_info):
             raise ValueError("All multiplicities must be positive integers.")
 
-        self.supercell_vectors =  np.array([vec*m for vec, m in supercell_info])
-        self.cell_vectors = np.array([vec for vec, _ in supercell_info])
+        self.cell_vectors: NDArray[np.float64] = np.array([vec for vec, _ in supercell_info])
+        self.Nvec: NDArray[np.int64] = np.array([m for _, m in supercell_info])
+        self.supercell_vectors: NDArray[np.float64] = self.cell_vectors * self.Nvec[:, np.newaxis]
 
         if not self.cell_vectors.shape == (self.spacial_dim, self.spacial_dim):
             raise ValueError("The number of supercell vectors must match the spatial dimension.")
@@ -66,10 +74,67 @@ class Lattice:
         else:
             self.point_group = point_group
 
-        
+        self.all_sym: set[SymmetryOperation] = set()
+
+        for n in product(*[range(Ni) for Ni in self.Nvec]):
+            for r in self.point_group:
+                perm = self._get_permutation_pt(r) * reduce(lambda x, y: x * y, [self._get_permutation_tr(ni) for ni in n])
+                self.all_sym.add(perm)
+                if self.spin_flip_sym:
+                    perm1 = perm.copy()
+                    perm1.spin_flip = True
+                    self.all_sym.add(perm1)
+
 
         
+    def momentum_vec(self, *n:int):
+        '''
+        Compute the momentum vector in the Brillouin zone given a set of indices.
+        Args:
+            *n: A variable number of indices corresponding to the supercell vectors.
+        Returns:
+            A numpy array representing the momentum vector in the Brillouin zone.
+        '''
+        if len(n) != self.spacial_dim:
+            raise ValueError(f"Expected {self.spacial_dim} indices, got {len(n)}.")
+        if not all((0 <= ni < Ni) for ni, Ni in zip(n, self.Nvec)):
+            raise ValueError(f"Indices must in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
+        return np.array(n) @ self.bz_cellvectors
         
+    
+    def _build_adapt_basis(self,
+                          all_sym:set[SymmetryOperation]|None = None,
+                          N:int|None = None
+                          )-> dict[tuple[int],int]:
+        '''
+        Build an adapted basis for the lattice, taking into account the symmetries of the system
+        Args:
+            all_sym: A set of SymmetryOperation objects representing all the symmetry operations of the unit cell.
+            N: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
+        Returns:
+            A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
+        '''
+        if all_sym is None:
+            all_sym = self.all_sym
+
+        basis = {}
+        if N is None: # if N is not provided, include all states
+            for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+                for s in all_sym:
+                    permuted_state = tuple(s(np.array(state)))
+                    if permuted_state not in basis:
+                        basis[permuted_state] = len(basis)
+        else: # if N is provided, only include states with total number of particles equal to N
+            for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+                if sum(state) != N:
+                    continue
+                for s in all_sym:
+                    permuted_state = tuple(s(np.array(state)))
+                    if permuted_state not in basis:
+                        basis[permuted_state] = len(basis)
+
+        return basis
+
 
     def set_center_at(self, center:int | np.ndarray):
         '''
@@ -120,20 +185,28 @@ class Lattice:
                 return idx
         raise ValueError(f"Position {pos} not found in unit cell nor extended cell.")
 
-    def _get_permutation_pt(self, arr:np.ndarray)-> Permutation:
+    def _get_permutation_pt(self, arr:np.ndarray)-> SymmetryOperation:
         '''
         Given a point group transformation arr, return the permutation of the atoms in the unit cell that corresponds to this transformation.
+        Accepts either a (d,d) matrix or a 0-d scalar (identity for any dimension).
         '''
-        assert arr.shape == (self.spacial_dim, self.spacial_dim), \
-        f"Transformation matrix must be of shape ({self.spacial_dim}, {self.spacial_dim})."
+        if arr.ndim == 0:
+            # TrivialGroup identity: scalar 1 → acts as identity for any dimension
+            pass
+        else:
+            assert arr.shape == (self.spacial_dim, self.spacial_dim), \
+            f"Transformation matrix must be of shape ({self.spacial_dim}, {self.spacial_dim}), got {arr.shape}."
 
         permuted = np.zeros(self.size_of_unit_cell, dtype=int)
 
         for pos, s, idx in self.unit_cell_idx:
-            transformed_pos = arr @ pos
+            if arr.ndim == 0:
+                transformed_pos = arr * pos       # scalar identity
+            else:
+                transformed_pos = arr @ pos
             permuted[idx] = self._get_idx(transformed_pos, s)
-        return Permutation(permuted)
-    def _get_permutation_tr(self, dir:int)-> Permutation:
+        return SymmetryOperation(permuted, physical_dim=self.physical_dim, spin_flip=False)
+    def _get_permutation_tr(self, dir:int)-> SymmetryOperation:
         '''
         Given a translation vector dir, return the permutation of the atoms in the unit cell that corresponds to this translation.
         '''
@@ -142,28 +215,55 @@ class Lattice:
         translated = np.zeros(self.size_of_unit_cell, dtype=int)
         for pos, s, idx in self.unit_cell_idx:
             translated[idx] = self._get_idx(pos + self.cell_vectors[dir], s)
-        return Permutation(translated)
+        return SymmetryOperation(translated, physical_dim=self.physical_dim, spin_flip=False)
 
     
-class Permutation:
+class SymmetryOperation:
     '''
-    Class representing a permutation of atoms in the lattice.
+    Class representing a symmetry operation on atoms in the lattice.
     '''
-    def __init__(self, perm: np.ndarray):
+    def __init__(self, 
+                 perm: np.ndarray,
+                 physical_dim: int,
+                 spin_flip: bool = False):
         self.perm = perm
         self.size = len(perm)
+        self.spin_flip = spin_flip
+        self.physical_dim = physical_dim
         if not np.array_equal(np.sort(perm), np.arange(self.size)):
             raise ValueError("Invalid permutation array. It must contain all integers from 0 to size-1 exactly once.")
 
     def __call__(self, x:np.ndarray) -> np.ndarray:
-        return x[self.perm]
+        if not self.spin_flip:
+            return x[self.perm]
+        else:
+            return self.physical_dim - 1 - x[self.perm] 
 
-    def __mul__(self, other: 'Permutation') -> 'Permutation':
-        if not isinstance(other, Permutation):
-            raise TypeError("Can only multiply with another Permutation.")
+    def __mul__(self, other: 'SymmetryOperation') -> 'SymmetryOperation':
+        if not isinstance(other, SymmetryOperation):
+            raise TypeError("Can only multiply with another SymmetryOperation.")
         if self.size != other.size:
-            raise ValueError("Permutations must be of the same size to multiply.")
-        return Permutation(self.perm[other.perm])
+            raise ValueError("SymmetryOperations must be of the same size to multiply.")
+        return SymmetryOperation(self.perm[other.perm], 
+                                 physical_dim=self.physical_dim, 
+                                 spin_flip=self.spin_flip ^ other.spin_flip)
+    def inv(self)-> 'SymmetryOperation':
+        inv_perm = np.argsort(self.perm)
+        return SymmetryOperation(inv_perm,
+                                 physical_dim=self.physical_dim,
+                                 spin_flip=self.spin_flip)
+    def __pow__(self, power: int) -> 'SymmetryOperation':
+        if power == 0:
+            return SymmetryOperation(np.arange(self.size), self.physical_dim, self.spin_flip)
+        elif power > 0:
+            result = self
+            for _ in range(power - 1):
+                result = result * self
+            return result
+        else:
+            return self.inv() ** (-power)
+    def copy(self) -> SymmetryOperation:
+        return SymmetryOperation(self.perm.copy(), self.physical_dim, self.spin_flip)
 
     def __hash__(self):
         return hash(tuple(self.perm))
@@ -176,13 +276,26 @@ class PointGroup(ABC):
     Class representing a group of rotations and inversion. 
     '''
     @abstractmethod
-    def little_group(self, k:np.ndarray) -> tuple['PointGroup', list[np.ndarray]]:
+    def little_group(self, k:np.ndarray,
+                     reciprocal_basis:np.ndarray|None = None
+                     ) -> tuple['PointGroup', list[np.ndarray]]:
         '''
         Return the little group of a given momentum k.
+
         Args:
             k: A numpy array representing the momentum vector.
+            reciprocal_basis: Optional (d,d) array whose columns are the
+                reciprocal-lattice basis vectors of the supercell.  When
+                provided, *op* ∈ G_pt belongs to the little group iff
+                ``op @ k ≈ k + reciprocal_basis @ n`` for some integer
+                vector *n*.  When ``None``, exact preservation
+                ``op @ k ≈ k`` is used (suitable for Γ, or when the
+                reciprocal lattice is unknown).
+
         Returns:
-            (grp,lst): A PointGroup object representing the little group of k, and a list representing the left coset representatives of the little group in the full point group.
+            (grp,lst): A PointGroup object representing the little group
+            of k, and a list of left-coset representatives
+            G_pt / G_k.
         '''
         raise NotImplementedError("This method should be implemented in subclasses.")
         
@@ -210,14 +323,14 @@ class PointGroup(ABC):
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     @abstractmethod
-    def __iter__(self):
+    def __iter__(self)-> PointGroup:
         '''
         Return an iterator over the group operations in the point group.
         '''
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     @abstractmethod
-    def __next__(self):
+    def __next__(self) -> np.ndarray:
         '''
         Return the next group operation in the point group.
         '''
@@ -231,11 +344,14 @@ class TrivialGroup(PointGroup):
     The only irrp of this group is 'A', which has a character of 1 for the identity operation.
     '''
     def __init__(self):
-        ...
+        self._iterated = False
 
     def all_irrps(self) -> list[str]:
         return ['A']
-    def little_group(self, k:np.ndarray) -> tuple['PointGroup', list[np.ndarray]]:
+
+    def little_group(self, k:np.ndarray,
+                     reciprocal_basis:np.ndarray|None = None
+                     ) -> tuple['PointGroup', list[np.ndarray]]:
         return self, [np.eye(len(k))]
 
     def character(self, irrp:str, op:np.ndarray) -> complex:
@@ -245,8 +361,11 @@ class TrivialGroup(PointGroup):
             raise ValueError(f"Unknown irreducible representation: {irrp}")
 
     def __iter__(self):
+        self._iterated = False
         return self
 
-    def __next__(self):
-        yield 1
-        raise StopIteration
+    def __next__(self) -> np.ndarray:
+        if self._iterated:
+            raise StopIteration
+        self._iterated = True
+        return np.array(1)
