@@ -3,6 +3,8 @@
 *.blg
 *.log
 *.gz
+*.out
+
 
 __pycache__/
 .venv/

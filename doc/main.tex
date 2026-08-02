@@ -16,76 +16,388 @@ The central problem of many-body physics is to diagonalize the Hamiltonian $\mat
     \mathscr{H} = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L}\mid \sigma_i=1,\dots,d\}.
 \end{align}The problem with a naive approach is that $\mathscr{H}$ is exponentially large. Let $L$ be the lattice size and $d$ be the local Hilbert space dimension, the dimension of $\mathscr{H}$ is $d^L$. If the system has $\mathsf{U}(1)$ symmetry, then $\mathscr{H}$ is further decomposed into subspaces $\mathscr{H}_N$ with fixed particle number $N$, defined as\begin{align}
     \mathscr{H}_N = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L} \mid \sum_{i=1}^L \sigma_i = N\},
-\end{align} and the dimension of $\mathscr{H}_N$ is $\binom{L}{N}$, which is still exponentially large. 
+\end{align} and the dimension of $\mathscr{H}_N$ is $\binom{L}{N}$, which is still exponentially large.
 
-To address such problem, we will use the representation theory\cite{fulton1991representation} to decompose the Hilbert space into irreducible representations of the symmetry group $G$ of the Hamiltonian $\mathcal{H}$. 
+To address such problem, we will use the representation theory\cite{fulton1991representation} to decompose the Hilbert space into irreducible representations of the symmetry group $G$ of the Hamiltonian $\mathcal{H}$.
 
 We will assume $G$ is a finite group, and it acts on the Hilbert space $\mathscr{H}$ via a unitary representation $U: G \to U(\mathscr{H})$. What we mean by $\mathcal{H}$ has symmetry $G$ is that $\mathcal{H}$ commutes with the action of $G$, i.e. $[U(g),\mathcal{H}] = 0$ for all $g\in G$. By Schur's lemma, we know that $\mathcal{H}$ is block diagonal in the basis of irreducible representations of $G$. Hence we can diagonalize $\mathcal{H}$ in each irreducible representation separately, which reduces the computational cost significantly.
+
 \section{Building the symmetry group}
-In our case case, we consider two kinds of symmetry: the lattice symmetry that permutes the sites and the internal symmetry that performs a spin flip:\begin{align}
+
+In our case, we consider two kinds of symmetry: the lattice symmetry that permutes the sites and the internal symmetry that performs a spin flip:\begin{align}
     g\ket{\sigma_1\dots\sigma_L} &= \ket{\sigma_{g^{-1}(1)}\dots\sigma_{g^{-1}(L)}},\quad g\in G_{\mathrm{latt}}\\
     \mathcal{F}\ket{\sigma_1\dots\sigma_L} &= \ket{(d-\sigma_1),\dots ,( d-\sigma_L)}
 \end{align}
-and the full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The lattice symmetry group $G_{\mathrm{latt}}$ is further decomposed into a semi-direct product of the translation  group $G_{\mathrm{tr}}$ and the point group $G_{\mathrm{pt}}$, i.e. $G_{\mathrm{latt}} = G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$, where $G_{\mathrm{tr}} = \mathbb{Z}_{N_1}\times\cdots\mathbb{Z}_{N_d}$ is a finite Abelian group and $G_{\mathrm{pt}}$ is a finite group. 
+and the full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The lattice symmetry group $G_{\mathrm{latt}}$ is a semi-direct product of the translation group $G_{\mathrm{tr}}$ and the point group $G_{\mathrm{pt}}$, i.e. $G_{\mathrm{latt}} = G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$, where $G_{\mathrm{tr}} = \mathbb{Z}_{N_1}\times\cdots\mathbb{Z}_{N_d}$ is a finite Abelian group and $G_{\mathrm{pt}}$ is a finite group.
 
-Suppose we already know all the information of $G_{\mathrm{pt}}$, we need to Calculate the character table of $G_{\mathrm{latt}}$ and $G$.
-\paragraph{The lattice Group}
-First we describe the structure of the lattice group $G_{\mathrm{latt}}=G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$. Let $\mathbf{t}\in G_{\mathrm{tr}} $ and $r\in G_{\mathrm{pt}}$. The element in $G_{\mathrm{latt}}$ can be written as $(\mathbf{t},r)$. 
-It acts on the real space as\begin{align}
-    (\mathbf{t},r)\mathbf{x} = r\mathbf{x} + \mathbf{t}.
-\end{align}The group multiplication defined as\begin{align}
-    (\mathbf{t}_1,r_1)(\mathbf{t}_2,r_2) = (\mathbf{t}_1+r_1\mathbf{t}_2,r_1r_2)
-\end{align}where $r(\mathbf{t})$ is the action of $r$ on $\mathbf{t}$. The inverse of $(\mathbf{t},r)$ is given by\begin{align}
-    (\mathbf{t},r)^{-1} = (-r^{-1}\mathbf{t},r^{-1}).
+In the following, we decouple the translational symmetry from the point group symmetry: we treat $G_{\mathrm{tr}}$ and $G_{\mathrm{pt}}$ as independent objects, each with its own action on the Hilbert space and its own representation theory. The semi-direct product structure $G_{\mathrm{latt}} = G_{\mathrm{tr}} \rtimes G_{\mathrm{pt}}$ is then built as a \emph{composition} of the two. This decoupling enables a two-step decomposition of the Hilbert space — first by momentum (translations), then by point group irreps (little group) — which is both conceptually clearer and computationally more efficient.
+
+\subsection{Translation group \texorpdfstring{$G_{\mathrm{tr}}$}{G\_tr}}
+
+The translation group is a finite Abelian group
+\begin{align}
+    G_{\mathrm{tr}} = \mathbb{Z}_{N_1} \times \mathbb{Z}_{N_2} \times \cdots \times \mathbb{Z}_{N_d},
+\end{align}
+where $N_i$ is the number of unit cells along the $i$-th lattice direction. An element $\mathbf{t} = (t_1, \dots, t_d) \in G_{\mathrm{tr}}$ corresponds to a translation by
+\begin{align}
+    \mathbf{t} = \sum_{i=1}^{d} t_i \mathbf{a}_i,
+\end{align}
+where $\mathbf{a}_i$ are the primitive lattice vectors. The group operation is vector addition modulo the supercell periodicity:
+\begin{align}
+    \mathbf{t}_1 + \mathbf{t}_2 \pmod{\text{supercell}}.
 \end{align}
 
-The irreducible representations of $G_{\mathrm{tr}}$ are one-dimensional, and are labeled by the momentum \begin{align}
-    \textbf{k}\in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\mid k_i = 0,\frac{2\pi}{N_i},\dots,\frac{2\pi(N_i-1)}{N_i}\right\},
-\end{align}with the character defined as\begin{align}
-    \chi_{\textbf{k}}^{G_{\mathrm{tr}}}(\mathbf{t}) = \textrm{e}^{\textrm{i} \textbf{k}\cdot \textbf{t}}.
+\paragraph{Action on Hilbert space.}
+A translation $\mathbf{t} \in G_{\mathrm{tr}}$ acts on a basis state by permuting the site indices according to the translation. Concretely, if site $i$ is translated to site $j$, then
+\begin{align}
+    \mathbf{t} \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{t^{-1}(1)} \dots \sigma_{t^{-1}(L)}}.
 \end{align}
-The irreducible representations of $G_{\mathrm{latt}}$ are labeled by the momentum $\textbf{k}$ and the irreducible representations of the little group \begin{align}
-    G_{\textbf{k}} = \{r\in G_{\mathrm{pt}}\mid r\textbf{k} = \textbf{k}\}\subset G_{\mathrm{pt}}.
-\end{align}
-Suppose we know all the irreducible representations of the little group $G_{\textbf{k}}$, with its character denoted as $\chi_{\alpha}^{G_{\mathbf{k}}}$, then the irreducible representations of $G_{\mathrm{latt}}$ are given by\begin{align}
-    \chi_{\textbf{k},\alpha}^{G_{\mathrm{latt}}}(t,r) = \sum_{g\in G_{\mathrm{pt}}/G_{\textbf{k}}} \chi_{\textbf{k}}^{G_{\mathrm{tr}}}(gt)\chi_{\alpha}^{G_{\mathbf{k}}}(grg^{-1})
-\end{align}
-where $g$ runs over the left cosets of $G_{\textbf{k}}$ in $G_{\mathrm{pt}}$. 
+This action is represented by a permutation matrix $P_{\mathbf{t}}$ on the computational basis.
 
-\paragraph{Full Symmetry Group}
-The full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The character of an element $(\mathbf{t},r,f)$ is given by\begin{align}
-    \chi_{\textbf{k},\alpha,f}^{G}(t,r,s) = \chi_{\textbf{k},\alpha}^{G_{\mathrm{latt}}}(t,r)\chi_{f}^{\mathbb{Z}_2}(s)\label{eq:full_character}
+\paragraph{Irreducible representations.}
+Since $G_{\mathrm{tr}}$ is Abelian, all its irreducible representations are one-dimensional and are labeled by the crystal momentum
+\begin{align}
+    \mathbf{k} \in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\;\middle|\; k_i = 0, \frac{2\pi}{N_i}, \dots, \frac{2\pi(N_i-1)}{N_i}\right\}.
 \end{align}
-where $f = \pm 1$ labels the two irreducible representations of $\mathbb{Z}_2$. We will use the character \eqref{eq:full_character} to decompose the Hilbert space into irreducible representations of $G$.
+The character (and the representation itself) is
+\begin{align}
+    \chi_{\mathbf{k}}^{G_{\mathrm{tr}}}(\mathbf{t}) = e^{i \mathbf{k} \cdot \mathbf{t}}.
+\end{align}
+The number of distinct momentum labels is $|G_{\mathrm{tr}}| = \prod_i N_i$.
+
+\paragraph{Projection onto momentum sectors.}
+The projector onto the subspace with momentum $\mathbf{k}$ is
+\begin{align}
+    \Pi_{\mathbf{k}} = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in G_{\mathrm{tr}}} \chi_{\mathbf{k}}^*(\mathbf{t}) \, \mathbf{t}.
+\end{align}
+Applying $\Pi_{\mathbf{k}}$ to the full Hilbert space $\mathscr{H}$ yields the momentum-$\mathbf{k}$ sector $\mathscr{H}_{\mathbf{k}}$. Since $[\mathcal{H}, \mathbf{t}] = 0$ for all $\mathbf{t} \in G_{\mathrm{tr}}$, the Hamiltonian is block-diagonal in momentum:
+\begin{align}
+    \mathcal{H} = \bigoplus_{\mathbf{k} \in \mathrm{BZ}} \mathcal{H}_{\mathbf{k}},
+\end{align}
+where $\mathcal{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathcal{H} \Pi_{\mathbf{k}}$ acts on $\mathscr{H}_{\mathbf{k}}$.
+
+This is the first step of the decoupled decomposition: using translations alone, we reduce the problem to diagonalizing $\mathcal{H}_{\mathbf{k}}$ independently for each $\mathbf{k}$. This is nothing but Bloch's theorem.
+
+\subsection{Point group \texorpdfstring{$G_{\mathrm{pt}}$}{G\_pt}}
+
+The point group $G_{\mathrm{pt}}$ is a finite subgroup of $\mathrm{O}(d)$ (or $\mathrm{SO}(d)$ for proper rotations only). Its elements $r \in G_{\mathrm{pt}}$ act on real-space coordinates as
+\begin{align}
+    r : \mathbf{x} \mapsto r \mathbf{x}.
+\end{align}
+
+\paragraph{Action on Hilbert space.}
+A point group operation $r \in G_{\mathrm{pt}}$ acts on a basis state by permuting the site indices according to the rotated positions. If site $i$ at position $\mathbf{x}_i$ is mapped by $r$ to the position $r\mathbf{x}_i$, which coincides with site $j$, then
+\begin{align}
+    r \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{r^{-1}(1)} \dots \sigma_{r^{-1}(L)}}.
+\end{align}
+This action is represented by a permutation matrix $P_r$.
+
+\paragraph{Action on momentum space.}
+The point group also acts on the Brillouin zone: $r \in G_{\mathrm{pt}}$ maps momentum $\mathbf{k}$ to $r\mathbf{k}$. This action partitions the Brillouin zone into \emph{stars}: the star of $\mathbf{k}$ is
+\begin{align}
+    \mathrm{Star}(\mathbf{k}) = \{ r\mathbf{k} \mid r \in G_{\mathrm{pt}} \},
+\end{align}
+where momenta related by a reciprocal lattice vector are identified (i.e., we work modulo the reciprocal lattice: $r\mathbf{k} \simeq \mathbf{k} + \mathbf{G}$ for some reciprocal lattice vector $\mathbf{G}$).
+
+\paragraph{Little group (stabilizer of \texorpdfstring{$\mathbf{k}$}{k}).}
+The little group of momentum $\mathbf{k}$ is the subgroup of $G_{\mathrm{pt}}$ that leaves $\mathbf{k}$ invariant (up to reciprocal lattice vectors):
+\begin{align}
+    G_{\mathbf{k}} = \{ r \in G_{\mathrm{pt}} \mid r\mathbf{k} \simeq \mathbf{k} \pmod{\text{reciprocal lattice}} \}.
+\end{align}
+The irreps of $G_{\mathbf{k}}$ are denoted by $\alpha$, with characters $\chi_{\alpha}^{G_{\mathbf{k}}}(r)$ for $r \in G_{\mathbf{k}}$. Since $G_{\mathbf{k}}$ is a subgroup of $G_{\mathrm{pt}}$, its irreps are computed independently of any translation information.
+
+\paragraph{Orbit-stabilizer decomposition.}
+The full point group decomposes into cosets of the little group:
+\begin{align}
+    G_{\mathrm{pt}} = \bigsqcup_{g \in G_{\mathrm{pt}} / G_{\mathbf{k}}} g \, G_{\mathbf{k}},
+\end{align}
+where $g$ runs over a set of left-coset representatives. The number of cosets is the size of the star: $|G_{\mathrm{pt}}| / |G_{\mathbf{k}}| = |\mathrm{Star}(\mathbf{k})|$.
+
+\subsection{Lattice group \texorpdfstring{$G_{\mathrm{latt}} = G_{\mathrm{tr}} \rtimes G_{\mathrm{pt}}$}{G\_latt}}
+
+Now we compose the two ingredients. An element of $G_{\mathrm{latt}}$ is a pair $(\mathbf{t}, r)$ with $\mathbf{t} \in G_{\mathrm{tr}}$ and $r \in G_{\mathrm{pt}}$.
+
+\paragraph{Group structure.}
+The multiplication law reflects that translations and rotations do not commute: rotating then translating is equivalent to translating then rotating by the rotated translation vector:
+\begin{align}
+    (\mathbf{t}_1, r_1)(\mathbf{t}_2, r_2) = (\mathbf{t}_1 + r_1 \mathbf{t}_2, \; r_1 r_2).
+\end{align}
+The inverse is
+\begin{align}
+    (\mathbf{t}, r)^{-1} = (-r^{-1}\mathbf{t}, \; r^{-1}).
+\end{align}
+The group order is $|G_{\mathrm{latt}}| = |G_{\mathrm{tr}}| \cdot |G_{\mathrm{pt}}|$.
+
+\paragraph{Action on Hilbert space.}
+By composition, $(\mathbf{t}, r)$ acts as: first rotate by $r$, then translate by $\mathbf{t}$:
+\begin{align}
+    (\mathbf{t}, r) \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{(\mathbf{t}, r)^{-1}(1)} \dots \sigma_{(\mathbf{t}, r)^{-1}(L)}}.
+\end{align}
+In terms of permutations, $P_{(\mathbf{t}, r)} = P_{\mathbf{t}} \circ P_r$.
+
+\paragraph{Irreducible representations (induced from \texorpdfstring{$G_{\mathrm{tr}}$}{G\_tr}).}
+The irreps of $G_{\mathrm{latt}}$ are obtained by the method of \emph{induced representations}. Starting from the one-dimensional irrep $\mathbf{k}$ of the Abelian normal subgroup $G_{\mathrm{tr}}$, we induce it to the full group $G_{\mathrm{latt}}$ using the little group $G_{\mathbf{k}}$ of the point group action.
+
+Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with character $\chi_{\alpha}^{G_{\mathbf{k}}}$. The induced character of the irrep $(\mathbf{k}, \alpha)$ of $G_{\mathrm{latt}}$ is
+\begin{align}
+    \boxed{\;
+    \chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}(\mathbf{t}, r)
+    = \sum_{g \in G_{\mathrm{pt}} / G_{\mathbf{k}}}
+      \chi_{\mathbf{k}}^{G_{\mathrm{tr}}}(g \cdot \mathbf{t}) \;
+      \tilde{\chi}_{\alpha}^{G_{\mathbf{k}}}(g r g^{-1})
+    \;},
+\end{align}
+where
+\begin{align}
+    \tilde{\chi}_{\alpha}^{G_{\mathbf{k}}}(x) =
+    \begin{cases}
+        \chi_{\alpha}^{G_{\mathbf{k}}}(x), & \text{if } x \in G_{\mathbf{k}}, \\
+        0, & \text{otherwise}.
+    \end{cases}
+\end{align}
+The sum runs over a set of left-coset representatives of $G_{\mathbf{k}}$ in $G_{\mathrm{pt}}$.
+
+The dimension of the irrep $(\mathbf{k}, \alpha)$ is
+\begin{align}
+    d_{\mathbf{k}, \alpha} = \frac{|G_{\mathrm{pt}}|}{|G_{\mathbf{k}}|} \cdot d_{\alpha},
+\end{align}
+where $d_{\alpha} = \chi_{\alpha}^{G_{\mathbf{k}}}(e)$ is the dimension of the little group irrep.
+
+\paragraph{Two-step projection.}
+The crucial advantage of the decoupled formulation is that we can decompose the Hilbert space in two sequential steps rather than one expensive projection:
+
+\begin{enumerate}
+    \item \textbf{Momentum projection (translation only):} For each $\mathbf{k} \in \mathrm{BZ}$, construct the momentum sector
+    \begin{align}
+        \mathscr{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathscr{H},
+        \qquad
+        \Pi_{\mathbf{k}} = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in G_{\mathrm{tr}}} e^{-i\mathbf{k}\cdot\mathbf{t}} \; \mathbf{t}.
+    \end{align}
+    Since $\Pi_{\mathbf{k}}$ only involves $|G_{\mathrm{tr}}|$ terms (translations), this step is cheap — it is a discrete Fourier transform on the lattice.
+
+    \item \textbf{Little group projection (point group, within each \texorpdfstring{$\mathbf{k}$}{k}-sector):} Within $\mathscr{H}_{\mathbf{k}}$, the little group $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$ still acts as a symmetry (since $\mathbf{k}$ is invariant under $G_{\mathbf{k}}$). We further decompose $\mathscr{H}_{\mathbf{k}}$ using the irreps $\alpha$ of $G_{\mathbf{k}}$:
+    \begin{align}
+        \mathscr{H}_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \, \mathscr{H}_{\mathbf{k}},
+        \qquad
+        \Pi_{\alpha}^{G_{\mathbf{k}}} = \frac{d_{\alpha}}{|G_{\mathbf{k}}|} \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \; r.
+    \end{align}
+    This step only involves $|G_{\mathbf{k}}| \le |G_{\mathrm{pt}}|$ terms, which is significantly cheaper than projecting with the full induced character.
+\end{enumerate}
+
+The combined projector is
+\begin{align}
+    \Pi_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \circ \Pi_{\mathbf{k}}.
+\end{align}
+This two-step procedure is mathematically equivalent to the one-step projection with the full induced character $\chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}$, but it factorizes the computation into an $\mathcal{O}(|G_{\mathrm{tr}}|)$ step followed by an $\mathcal{O}(|G_{\mathbf{k}}|)$ step, rather than a single $\mathcal{O}(|G_{\mathrm{tr}}| \cdot |G_{\mathrm{pt}}|)$ step.
+
+\subsection{Full symmetry group \texorpdfstring{$G = G_{\mathrm{latt}} \times \mathbb{Z}_2$}{G}}
+
+The internal spin-flip symmetry $\mathbb{Z}_2 = \{e, \mathcal{F}\}$ is a direct product with the lattice group and can be treated independently. The full symmetry group is
+\begin{align}
+    G = G_{\mathrm{latt}} \times \mathbb{Z}_2.
+\end{align}
+
+\paragraph{Action on Hilbert space.}
+The spin-flip operator acts on each site independently:
+\begin{align}
+    \mathcal{F} \ket{\sigma_1 \dots \sigma_L} = \ket{(d-1-\sigma_1), \dots, (d-1-\sigma_L)}.
+\end{align}
+An element of $G$ is a triple $(\mathbf{t}, r, f)$ with $f \in \{0, 1\}$, and it acts as
+\begin{align}
+    (\mathbf{t}, r, f) \ket{\sigma_1 \dots \sigma_L} = \mathcal{F}^f \circ (\mathbf{t}, r) \ket{\sigma_1 \dots \sigma_L}.
+\end{align}
+
+\paragraph{Irreducible representations.}
+Since $\mathbb{Z}_2$ forms a direct product with $G_{\mathrm{latt}}$, its irreps factorize. Let $s = \pm 1$ label the two irreps of $\mathbb{Z}_2$ (even/odd under spin flip). The character of an irrep $(\mathbf{k}, \alpha, s)$ of $G$ is
+\begin{align}
+    \chi_{\mathbf{k}, \alpha, s}^{G}(\mathbf{t}, r, f)
+    = \chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}(\mathbf{t}, r) \; \cdot \;
+    \chi_{s}^{\mathbb{Z}_2}(f),
+\end{align}
+where $\chi_{s}^{\mathbb{Z}_2}(0) = 1$ and $\chi_{s}^{\mathbb{Z}_2}(1) = s$.
+
+\paragraph{Three-step decomposition.}
+With the decoupled approach, the full decomposition proceeds as:
+\begin{enumerate}
+    \item \textbf{Momentum projection:} $\mathscr{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathscr{H}$ (using $G_{\mathrm{tr}}$ only)
+    \item \textbf{Little group projection:} $\mathscr{H}_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \mathscr{H}_{\mathbf{k}}$ (using $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$)
+    \item \textbf{Spin-flip projection:} $\mathscr{H}_{\mathbf{k}, \alpha, s} = \Pi_{s}^{\mathbb{Z}_2} \mathscr{H}_{\mathbf{k}, \alpha}$ (using $\mathbb{Z}_2$)
+\end{enumerate}
+Each step is independent and computationally cheaper than a single projection with the full group $G$.
+
 \section{Projectors and Adapted Basis}
-Let $i=(\mathbf{k},\alpha,f)$ label the irreducible representations of $G$. The projector onto the irreducible representation $i$ is given by\begin{align}
-    \Pi_i = \frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)g,
-\end{align}where $d_i$ is the dimension of the irreducible representation. The adapted basis of such irreducible representation is given by\begin{align}
-    \frac{1}{N_i^x}\Pi_i\ket{x} = \frac{1}{N_i^x}\frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)g\ket{x},\quad x\in \mathscr{H}.
-\end{align}
-where $N_i^x$ is the normalization factor. $\ket{x}$ is chosen as the representative of the orbit of $G$ in $\mathscr{H}$. For a deterministic output, we choose the representative $\ket{x}$ to be the one with the smallest integer value when we map $\ket{\sigma_1\dots\sigma_L}$ to an integer by\begin{align}
-    \ket{\sigma_1\dots\sigma_L} \mapsto \sum_{i=1}^L \sigma_i d^{i-1}.
-\end{align}
 
-The normalization factor $N_i^x$ is given by\begin{align}
-    (N_i^x)^2 = \mel{x}{\Pi_i}{x} = \frac{d_i}{|G|}\sum_{g\in G} \chi_i(g)\mel{x}{g}{x}.
+With the decoupled formulation, we construct the adapted basis in three stages.
+
+\subsection{Momentum-adapted basis}
+Let $\ket{x}$ be a computational basis state (a representative of a translation orbit). The momentum-adapted basis states are
+\begin{align}
+    \ket{\mathbf{k}; x} = \frac{1}{N_{\mathbf{k}}^x} \Pi_{\mathbf{k}} \ket{x}
+    = \frac{1}{N_{\mathbf{k}}^x} \frac{1}{|G_{\mathrm{tr}}|}
+      \sum_{\mathbf{t} \in G_{\mathrm{tr}}} e^{-i\mathbf{k}\cdot\mathbf{t}} \; \mathbf{t}\ket{x},
 \end{align}
-that is, we only need to sum over the stabilizer \begin{align}
-    \mathrm{Stab}_G(\ket{x}) = \{g\in G\mid g\ket{x} = \ket{x}\}
+where the normalization factor is
+\begin{align}
+    (N_{\mathbf{k}}^x)^2 = \mel{x}{\Pi_{\mathbf{k}}}{x}
+    = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in \mathrm{Stab}_{G_{\mathrm{tr}}}(\ket{x})} e^{-i\mathbf{k}\cdot\mathbf{t}}.
 \end{align}
-and the normalization factor is given by\begin{align}
-    (N_i^x)^2 = \frac{d_i}{|G|}\sum_{g\in \mathrm{Stab}_G(\ket{x})} \chi_i(g).
+Here, $\mathrm{Stab}_{G_{\mathrm{tr}}}(\ket{x}) = \{ \mathbf{t} \in G_{\mathrm{tr}} \mid \mathbf{t}\ket{x} = \ket{x} \}$ is the translation stabilizer of $\ket{x}$.
+
+\subsection{Little-group-adapted basis}
+Within a fixed momentum sector $\mathbf{k}$, we further adapt the basis to the little group $G_{\mathbf{k}}$. Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with dimension $d_{\alpha}$ and character $\chi_{\alpha}$. The fully lattice-adapted basis state is
+\begin{align}
+    \ket{\mathbf{k}, \alpha; x}
+    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \Pi_{\alpha}^{G_{\mathbf{k}}} \ket{\mathbf{k}; x}
+    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
+      \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \; r \ket{\mathbf{k}; x},
+\end{align}
+with normalization
+\begin{align}
+    (N_{\mathbf{k}, \alpha}^x)^2
+    = \mel{\mathbf{k}; x}{\Pi_{\alpha}^{G_{\mathbf{k}}}}{\mathbf{k}; x}
+    = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
+      \sum_{r \in \mathrm{Stab}_{G_{\mathbf{k}}}(\ket{\mathbf{k}; x})} \chi_{\alpha}^*(r),
+\end{align}
+where $\mathrm{Stab}_{G_{\mathbf{k}}}(\ket{\mathbf{k}; x}) = \{ r \in G_{\mathbf{k}} \mid r\ket{\mathbf{k}; x} = \ket{\mathbf{k}; x} \}$.
+
+\subsection{Spin-flip adaptation}
+Finally, for the full group $G$, we project onto the spin-flip parity sector $s = \pm 1$:
+\begin{align}
+    \ket{\mathbf{k}, \alpha, s; x}
+    = \frac{1}{N_s^x} \Pi_{s}^{\mathbb{Z}_2} \ket{\mathbf{k}, \alpha; x}
+    = \frac{1}{N_s^x} \frac{1}{2}
+      \left( \mathbb{1} + s \mathcal{F} \right) \ket{\mathbf{k}, \alpha; x},
+\end{align}
+with normalization
+\begin{align}
+    (N_s^x)^2 = \frac{1}{2} \left( 1 + s \mel{\mathbf{k}, \alpha; x}{\mathcal{F}}{\mathbf{k}, \alpha; x} \right).
 \end{align}
 
 \section{Hamiltonian in Adapted Basis}
-Let $\ket{i,x} = \frac{1}{N_i^x}\Pi_i\ket{x}$ be the adapted basis of the irreducible representation $i$. Since we will dealing with invariant Hamiltonian, that is, \begin{align}
-    \frac{1}{N}\sum_{g\in G} g\mathcal{H}_{\mathrm{loc}}g^{-1}
+
+The Hamiltonian is symmetrized over the full symmetry group:
+\begin{align}
+    \mathcal{H} = \frac{1}{N} \sum_{h \in G} h \mathcal{H}_{\mathrm{loc}} h^{-1},
 \end{align}
-where $N$ is the number of stabilizers of $\mathcal{H}_{\mathrm{loc}}$ under conjugate action of $G$. We have\begin{align}
-    \mel{i,x}{\mathcal{H}}{i,x'} &= \frac{1}{N_i^xN_i^{x'}}\mel{x}{\Pi_i\mathcal{H}\Pi_i}{x'}\\
-    &= \frac{1}{N_i^xN_i^{x'}}\frac{d_i^2}{|G|^2}\sum_{g,g'\in G}\frac{1}{N}\sum_{h} \chi_i(g)\chi_i(g')\mel{x}{gh\mathcal{H}_{\mathrm{loc}}h^{-1}g'^{-1}}{x'}\\
-    & = \frac{1}{N_i^xN_i^{x'}}\frac{d_i^2}{|G|^2}\sum_{g,g'\in G}\frac{1}{N}\sum_{h} \chi_i(gh^{-1})\chi_i(g'h^{-1})\mel{x}{g\mathcal{H}_{\mathrm{loc}}g'^{-1}}{x'}
+where $N$ is the number of elements in $G$ that stabilize $\mathcal{H}_{\mathrm{loc}}$ under conjugation.
+Since $[\mathcal{H}, g] = 0$ for all $g \in G$, the Hamiltonian is block-diagonal in the adapted basis.
+We compute the matrix elements in two stages, mirroring the two-step basis construction.
+
+\subsection{Step 1: Hamiltonian in the momentum-adapted basis}
+
+Let $\ket{\mathbf{k}; x} = \frac{1}{N_{\mathbf{k}}^x} \Pi_{\mathbf{k}} \ket{x}$ be the momentum-adapted basis state.
+Since $\Pi_{\mathbf{k}}$ is a projector that commutes with $\mathcal{H}$, we have
+$\mathcal{H} \Pi_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathcal{H}$, and therefore
+\begin{align}
+    \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}
+    &= \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
+       \mel{x}{\Pi_{\mathbf{k}} \mathcal{H} \Pi_{\mathbf{k}}}{x'}
+     = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
+       \mel{x}{\mathcal{H} \Pi_{\mathbf{k}}}{x'} \\
+    &= \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
+       \frac{1}{|G_{\mathrm{tr}}|}
+       \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
+       e^{-i\mathbf{k} \cdot \mathbf{t}}
+       \mel{x}{\mathcal{H} \cdot \mathbf{t}}{x'}.
 \end{align}
+Only a single sum over $G_{\mathrm{tr}}$ appears — the translation symmetry has been absorbed into the Bloch phase.
+Expanding the symmetrized Hamiltonian,
+\begin{align}
+    \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}
+    = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
+      \frac{1}{|G_{\mathrm{tr}}| N}
+      \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
+      \sum_{h \in G}
+      e^{-i\mathbf{k} \cdot \mathbf{t}}
+      \mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} \mathbf{t}}{x'}.
+\end{align}
+The inner matrix element $\mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} \mathbf{t}}{x'}$ is computed by:
+\begin{enumerate}
+    \item Apply the translation $\mathbf{t}$ to $\ket{x'}$ (permute the sites).
+    \item Apply $h^{-1}$ to the result, then $\mathcal{H}_{\mathrm{loc}}$, then $h$.
+    \item Take the overlap with $\bra{x}$.
+\end{enumerate}
+In practice, the sum over $h \in G$ can be reduced: only those $h$ for which
+$h^{-1} \mathbf{t} \ket{x'}$ has non-zero overlap with the support of $\mathcal{H}_{\mathrm{loc}}$
+contribute. For a local (few-site) $\mathcal{H}_{\mathrm{loc}}$, this is a small subset of $G$.
+
+For each momentum $\mathbf{k}$, this yields a matrix $H_{\mathbf{k}}$ of size
+$M_{\mathbf{k}} \times M_{\mathbf{k}}$, where $M_{\mathbf{k}}$ is the number of
+translation-orbit representatives that survive the momentum projection (i.e.\ those
+with $N_{\mathbf{k}}^x \neq 0$).
+
+\subsection{Step 2: Little-group reduction within each \texorpdfstring{$\mathbf{k}$}{k}-sector}
+
+Within a fixed momentum sector $\mathbf{k}$, the little group $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$
+still acts as a symmetry. The momentum-adapted states $\{\ket{\mathbf{k}; x}\}$ carry a
+representation of $G_{\mathbf{k}}$: each $r \in G_{\mathbf{k}}$ permutes these states.
+We can therefore further block-diagonalize $H_{\mathbf{k}}$ using the irreps of $G_{\mathbf{k}}$.
+
+Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with dimension $d_{\alpha}$ and character
+$\chi_{\alpha}$. The fully adapted basis state is
+\begin{align}
+    \ket{\mathbf{k}, \alpha; x}
+    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \Pi_{\alpha}^{G_{\mathbf{k}}} \ket{\mathbf{k}; x},
+    \qquad
+    \Pi_{\alpha}^{G_{\mathbf{k}}} = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
+    \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \, r.
+\end{align}
+The Hamiltonian matrix element in this basis is
+\begin{align}
+    \mel{\mathbf{k}, \alpha; x}{\mathcal{H}}{\mathbf{k}, \alpha; x'}
+    &= \frac{1}{N_{\mathbf{k}, \alpha}^x N_{\mathbf{k}, \alpha}^{x'}}
+       \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
+       \sum_{r \in G_{\mathbf{k}}}
+       \chi_{\alpha}^*(r)
+       \mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}.
+\end{align}
+The quantity $\mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}$ is a matrix element of
+$\mathcal{H}$ between two momentum-adapted states, with an additional point-group rotation
+$r$ applied to the right state. It is computed by the same formula as Step~1, with
+$\ket{x'}$ replaced by $r \ket{x'}$:
+\begin{align}
+    \mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}
+    = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
+      \frac{1}{|G_{\mathrm{tr}}| N}
+      \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
+      \sum_{h \in G}
+      e^{-i\mathbf{k} \cdot \mathbf{t}}
+      \mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} (\mathbf{t} \circ r)}{x'}.
+\end{align}
+
+\subsection{Summary of the two-step algorithm}
+
+\begin{enumerate}
+    \item \textbf{Choose representatives:} For each translation-orbit of computational basis
+    states, pick the canonical representative $\ket{x}$ (smallest integer value).
+    \item \textbf{Momentum projection (Step~1):} For each $\mathbf{k} \in \mathrm{BZ}$ and each pair
+    of representatives $(x, x')$, compute the momentum-projected matrix element
+    $H_{\mathbf{k}}(x, x') = \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}$.
+    This yields a sparse matrix of size $M_{\mathbf{k}} \times M_{\mathbf{k}}$, where
+    $M_{\mathbf{k}}$ is the number of representatives with $N_{\mathbf{k}}^x \neq 0$.
+    \item \textbf{Little-group reduction (Step~2):} For each $\mathbf{k}$ and each irrep $\alpha$ of
+    $G_{\mathbf{k}}$, compute the fully adapted matrix:
+    \begin{align}
+        H_{\mathbf{k}, \alpha}(x, x')
+        = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
+          \sum_{r \in G_{\mathbf{k}}}
+          \chi_{\alpha}^*(r) \;
+          H_{\mathbf{k}}\bigl(x,\, r \cdot x'\bigr).
+    \end{align}
+    Here $r \cdot x'$ denotes the index of the representative of the orbit containing
+    $r \ket{\mathbf{k}; x'}$ (if $r$ maps to a different representative, the matrix element
+    picks up the appropriate phase and normalization factors from the basis change).
+    \item \textbf{Spin-flip (Step~3, optional):} If spin-flip symmetry is present, further
+    resolve each $H_{\mathbf{k}, \alpha}$ into even/odd parity blocks using
+    $\Pi_s^{\mathbb{Z}_2} = \frac{1}{2}(\mathbb{1} + s \mathcal{F})$.
+\end{enumerate}
+
+\paragraph{Computational cost.}
+Step~1 costs $\mathcal{O}(M_{\mathbf{k}}^2 \cdot |G_{\mathrm{tr}}|)$ per momentum sector (with a
+constant factor proportional to the number of local terms in $\mathcal{H}_{\mathrm{loc}}$).
+Step~2 costs $\mathcal{O}(M_{\mathbf{k}}^2 \cdot |G_{\mathbf{k}}|)$ per irrep, where
+$|G_{\mathbf{k}}| \le |G_{\mathrm{pt}}|$. The total cost per $(\mathbf{k}, \alpha)$ sector is
+$\mathcal{O}\bigl(M_{\mathbf{k}}^2 \cdot (|G_{\mathrm{tr}}| + |G_{\mathbf{k}}|)\bigr)$.
 
 
 \bibliography{bib.bib}

@@ -1,11 +1,57 @@
 from abc import ABC, abstractmethod
-from functools import reduce
+from collections import defaultdict
 from itertools import product
 from typing import Optional, Iterator
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
+from scipy.sparse import csr_matrix
+
+
+class TranslationGroup:
+    '''
+    Translation group  G_tr = Z_{N1} × … × Z_{Nd}.
+
+    Elements are integer tuples  t = (t₁, …, t_d)  with  0 ≤ tᵢ < Nᵢ.
+    Irreducible representations are labelled by momentum tuples
+    k = (k₁, …, k_d)  in the Brillouin zone.
+
+    Characters are purely combinatorial:
+        χ_k(t) = exp(2πi · Σ_j k_j t_j / N_j).
+    '''
+    def __init__(self, Nvec: tuple[int, ...],
+                 cell_vectors: np.ndarray):
+        self.Nvec = Nvec
+        self.dim = len(Nvec)
+        self.cell_vectors = cell_vectors
+
+    def __len__(self) -> int:
+        return int(np.prod(self.Nvec))
+
+    def __iter__(self) -> Iterator[tuple[int, ...]]:
+        for ns in product(*[range(Ni) for Ni in self.Nvec]):
+            yield ns
+
+    def translation_vector(self, t: tuple[int, ...]) -> np.ndarray:
+        '''Real-space translation vector  Σ tᵢ aᵢ.'''
+        return sum(ti * self.cell_vectors[i] for i, ti in enumerate(t))
+
+    def all_momenta(self) -> list[tuple[int, ...]]:
+        '''All momentum labels in the Brillouin zone.'''
+        return list(self)
+
+    def momentum_vector(self, k: tuple[int, ...],
+                        reciprocal_basis: np.ndarray) -> np.ndarray:
+        '''Real-space momentum vector  k = Σ (kᵢ/Nᵢ) bᵢ.'''
+        return np.array(k) @ reciprocal_basis
+
+    def character(self, k: tuple[int, ...],
+                  t: tuple[int, ...]) -> complex:
+        '''χ_k(t) = exp(2πi · Σ_j k_j t_j / N_j).'''
+        phase = 2.0 * np.pi * sum(kj * tj / Nj
+                                   for kj, tj, Nj in zip(k, t, self.Nvec))
+        return np.exp(1j * phase)
 
 
 class Model:
@@ -75,8 +121,28 @@ class Model:
         else:
             self.point_group = point_group
 
+        # ── translation group ──────────────────────────────────────────
+        self.tr_group = TranslationGroup(
+            tuple(int(n) for n in self.Nvec), self.cell_vectors)
 
-        self.lattice_group = LatticeGroup(self)
+        # ── elementary permutations (d + |G_pt| stored, not the product) ─
+        self._elem_tr_perms: list[Permutation] = []
+        for i in range(self.spatial_dim):
+            translated = np.zeros(self.size_of_unit_cell, dtype=int)
+            for pos, s, idx in self.unit_cell_idx:
+                translated[idx] = self._get_idx(pos + self.cell_vectors[i], s)
+            self._elem_tr_perms.append(Permutation(translated))
+
+        self._pt_perms: list[Permutation] = []
+        for arr in self.point_group:
+            if arr.ndim != 0:
+                assert arr.shape == (self.spatial_dim, self.spatial_dim), \
+                    f"Transformation matrix must be of shape ({self.spatial_dim}, {self.spatial_dim}), got {arr.shape}."
+            permuted = np.zeros(self.size_of_unit_cell, dtype=int)
+            for pos, s, idx in self.unit_cell_idx:
+                transformed_pos = arr * pos if arr.ndim == 0 else arr @ pos
+                permuted[idx] = self._get_idx(transformed_pos, s)
+            self._pt_perms.append(Permutation(permuted))
 
         self.couplings: list[Coupling] = []
     
@@ -95,24 +161,115 @@ class Model:
 
 
 
-    def momentum_vec(self, *n:int):
-        '''
-        Compute the momentum vector in the Brillouin zone given a set of indices.
-        Args:
-            *n: A variable number of indices corresponding to the supercell vectors.
-        Returns:
-            A numpy array representing the momentum vector in the Brillouin zone.
-        '''
-        if len(n) != self.spatial_dim:
-            raise ValueError(f"Expected {self.spatial_dim} indices, got {len(n)}.")
-        if not all((0 <= ni < Ni) for ni, Ni in zip(n, self.Nvec)):
-            raise ValueError(f"Indices must be in the Brillouin zone. The multiplicities are {self.Nvec}, but got indices {n}.")
-        return np.array(n) @ self.bz_cellvectors
+    # ── Hamiltonian construction ────────────────────────────────────────────
 
-    def norm(self,state:tuple[int,...],sector) -> float:
-        raise NotImplementedError
+    def _tr_representatives(self, Sztot: Optional[int] = None
+                            ) -> list[tuple[int, ...]]:
+        '''Representatives of translation-only orbits.'''
+        seen = set()
+        reps = []
+        for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+            if Sztot is not None and sum(state) != Sztot:
+                continue
+            # Orbit of *state* under translations — take smallest as representative
+            rep = min(tuple(self._permutation(t, 0)(np.array(state)))
+                      for t in self.tr_group)
+            if rep not in seen:
+                seen.add(rep)
+                reps.append(rep)
+        return reps
 
-    
+    def _build_H_sym(self, Sztot: Optional[int] = None) -> csr_matrix:
+        states = [s for s in product(range(self.physical_dim),
+                                       repeat=self.size_of_unit_cell)
+                  if Sztot is None or sum(s) == Sztot]
+        n = len(states)
+        s2i = {s: i for i, s in enumerate(states)}
+
+        # build H_raw as sparse (COO accumulation)
+        raw_acc: dict[tuple[int, int], complex] = defaultdict(complex)
+        for i, s in enumerate(states):
+            for c in self.couplings:
+                for f, coeff in c.coupling_pair(s).items():
+                    j = s2i.get(f)
+                    if j is not None:
+                        raw_acc[(i, j)] += coeff
+
+        # symmetrize: accumulate (1/|G|) Σ_g g H_raw g^{-1} into sparse dict
+        n_g = len(self.tr_group) * len(self._pt_perms)
+        sym_acc: dict[tuple[int, int], complex] = defaultdict(complex)
+
+        # precompute forward permutation for each group element
+        for t in self.tr_group:
+            for r_idx in range(len(self._pt_perms)):
+                perm = self._permutation(t, r_idx)
+                pfwd = np.zeros(n, dtype=int)
+                for i, s in enumerate(states):
+                    gs = tuple(perm(np.array(s)))
+                    pfwd[i] = s2i[gs]
+                # U(g) H_raw U(g)^{-1} has matrix element at (pfwd[i], pfwd[j])
+                for (i, j), v in raw_acc.items():
+                    sym_acc[(pfwd[i], pfwd[j])] += v
+
+        data, rows, cols = [], [], []
+        inv_n = 1.0 / n_g
+        for (i, j), v in sym_acc.items():
+            v_scaled = v * inv_n
+            if abs(v_scaled) > 1e-12:
+                data.append(v_scaled)
+                rows.append(i)
+                cols.append(j)
+        return csr_matrix((data, (rows, cols)), shape=(n, n), dtype=complex)
+
+    def _build_H(self, Sztot: Optional[int] = None
+                 ) -> dict[tuple[int, ...], csr_matrix]:
+        '''Build H_k for each momentum sector k.  (Step 1 of 3.)'''
+        states = [s for s in product(range(self.physical_dim),
+                                       repeat=self.size_of_unit_cell)
+                  if Sztot is None or sum(s) == Sztot]
+        s2i = {s: i for i, s in enumerate(states)}
+        rep_list = self._tr_representatives(Sztot)
+        Gtr = len(self.tr_group)
+        H_sym = self._build_H_sym(Sztot)
+
+        result = {}
+        for k in self.tr_group.all_momenta():
+            k_reps, k_norms = [], []
+            for rep in rep_list:
+                phase_sum = sum(np.conj(self.tr_group.character(k, t))
+                               for t in self.tr_group
+                               if tuple(self._permutation(t, 0)(np.array(rep))) == rep)
+                norm_sq = abs(phase_sum) / Gtr
+                if norm_sq > 1e-12:
+                    k_reps.append(rep)
+                    k_norms.append(np.sqrt(norm_sq))
+            Mk = len(k_reps)
+            if Mk == 0:
+                continue
+
+            Hk_data, Hk_rows, Hk_cols = [], [], []
+            for i in range(Mk):
+                idx_i = s2i[k_reps[i]]
+                ni = 1.0 / (k_norms[i] * Gtr)
+                for j in range(Mk):
+                    rep_j = k_reps[j]
+                    nj = 1.0 / (k_norms[j] * Gtr)
+                    elem = 0.0j
+                    for t in self.tr_group:
+                        tx = tuple(self._permutation(t, 0)(np.array(rep_j)))
+                        h_val = H_sym[idx_i, s2i[tx]]
+                        if h_val != 0:
+                            elem += np.conj(self.tr_group.character(k, t)) * h_val
+                    elem *= ni * nj * Gtr
+                    if abs(elem) > 1e-12:
+                        Hk_data.append(elem); Hk_rows.append(i); Hk_cols.append(j)
+            H_k = csr_matrix((Hk_data, (Hk_rows, Hk_cols)), shape=(Mk, Mk),
+                             dtype=complex)
+            result[k] = H_k
+
+        return result
+
+
     # TODO: rewrite this in C++ and bind it to Python.
     def _build_adapted_basis(self,
                              Sztot:Optional[int] = None,
@@ -126,22 +283,104 @@ class Model:
         Returns:
             A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
         '''
-
-        def get_state(Sztot:Optional[int]) -> Iterator[tuple[int, ...]]:
-            if Sztot is None:
-                for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-                    yield state
-            else:
-                for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-                    if sum(state) == Sztot:
-                        yield state
         d = {}
-        for basis in get_state(Sztot):
-            orb = self.lattice_group.orbit(basis, spin_flip=spin_flip)
+        for basis in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
+            if Sztot is not None and sum(basis) != Sztot:
+                continue
+            orb = self.orbit(basis, spin_flip=spin_flip)
             if orb[0] not in d:
                 d[orb[0]] = len(d)
         return d
 
+    # ── Permutation composition ───────────────────────────────────────────
+
+    def _permutation(self, t: tuple[int, ...], r_idx: int) -> Permutation:
+        '''Compose  φ(t, r) = φ_tr(t) ∘ φ_pt(r)  on the fly.'''
+        n_sites = self.size_of_unit_cell
+        tr_perm = Permutation(np.arange(n_sites))
+        for i, ti in enumerate(t):
+            if ti:
+                tr_perm = tr_perm * (self._elem_tr_perms[i] ** ti)
+        return tr_perm * self._pt_perms[r_idx]
+
+    # ── Orbit ─────────────────────────────────────────────────────────────
+
+    def orbit(self, state: tuple[int, ...],
+              spin_flip: bool = False) -> list[tuple[int, ...]]:
+        '''
+        Compute the orbit of a basis state under the full lattice group
+        G_latt = G_tr ⋊ G_pt.
+
+        Args:
+            state: A tuple of integers representing the initial basis state.
+            spin_flip: If True, also include spin-flipped states.
+        Returns:
+            A sorted list of unique tuples.
+        '''
+        orb = []
+        for t in self.tr_group:
+            for r_idx in range(len(self._pt_perms)):
+                perm = self._permutation(t, r_idx)
+                orb.append(tuple(perm(np.array(state))))
+        if spin_flip:
+            flipped = tuple(self.physical_dim - 1 - np.array(state))
+            for t in self.tr_group:
+                for r_idx in range(len(self._pt_perms)):
+                    perm = self._permutation(t, r_idx)
+                    orb.append(tuple(perm(np.array(flipped))))
+        return sorted(set(orb))
+
+    # ── Two-step projection ────────────────────────────────────────────────
+
+    def momentum_project(self, k: tuple[int, ...],
+                         state: tuple[int, ...]
+                         ) -> dict[tuple[int, ...], complex]:
+        '''
+        Step 1: project onto momentum sector k using translations only.
+
+            Π_k |x⟩ = (1/|G_tr|) Σ_{t∈G_tr} exp(-i k·t) · t|x⟩
+
+        Returns a dict mapping projected basis states to coefficients.
+        '''
+        result: dict[tuple[int, ...], complex] = {}
+        inv_norm = 1.0 / len(self.tr_group)
+        for t in self.tr_group:
+            perm = self._permutation(t, 0)  # r_idx=0 → identity rotation
+            coeff = inv_norm * np.conj(self.tr_group.character(k, t))
+            projected = tuple(perm(np.array(state)))
+            result[projected] = result.get(projected, 0j) + coeff
+        return result
+
+    def little_group_project(self, k: tuple[int, ...],
+                             alpha: str,
+                             state: tuple[int, ...]
+                             ) -> dict[tuple[int, ...], complex]:
+        '''
+        Step 2: within momentum sector k, project onto little-group irrep α.
+
+            Π_α^{G_k} = (d_α/|G_k|) Σ_{r∈G_k} χ_α*(r) · r
+
+        *state* should already be momentum-projected (output of
+        ``momentum_project``).  Returns a dict of coefficients.
+        '''
+        k_vec = np.array(k) @ self.bz_cellvectors
+        lg, _ = self.point_group.little_group(k_vec, self.bz_cellvectors)
+        lg_ops = list(lg)
+        d_alpha = lg.character(alpha, next(iter(lg)))
+        inv_norm = d_alpha / len(lg_ops)
+
+        result: dict[tuple[int, ...], complex] = {}
+        for r_op in lg_ops:
+            # find index of r_op in self._pt_perms
+            for i, r in enumerate(self.point_group):
+                if np.allclose(r, r_op):
+                    r_idx = i
+                    break
+            perm = self._pt_perms[r_idx]
+            coeff = inv_norm * np.conj(lg.character(alpha, r_op))
+            projected = tuple(perm(np.array(state)))
+            result[projected] = result.get(projected, 0j) + coeff
+        return result
 
     def set_center_at(self, center: int | np.ndarray):
         '''
@@ -193,37 +432,6 @@ class Model:
             if np.allclose(p, pos, atol=tol) and s1 == s:
                 return idx
         raise ValueError(f"Position {pos} not found in unit cell or extended cell.")
-
-    def _get_permutation_pt(self, arr:np.ndarray)-> Permutation:
-        '''
-        Given a point group transformation arr, return the permutation of the atoms in the unit cell that corresponds to this transformation.
-        Accepts either a (d,d) matrix or a 0-d scalar (identity for any dimension).
-        '''
-        if arr.ndim == 0:
-            # TrivialGroup identity: scalar 1 → acts as identity for any dimension
-            pass
-        else:
-            assert arr.shape == (self.spatial_dim, self.spatial_dim), \
-                f"Transformation matrix must be of shape ({self.spatial_dim}, {self.spatial_dim}), got {arr.shape}."
-
-        permuted = np.zeros(self.size_of_unit_cell, dtype=int)
-
-        for pos, s, idx in self.unit_cell_idx:
-            transformed_pos = arr * pos if arr.ndim == 0 else arr @ pos
-            permuted[idx] = self._get_idx(transformed_pos, s)
-        return Permutation(permuted)
-    
-    def _get_permutation_tr(self, dir:int)-> Permutation:
-        '''
-        Given a translation vector dir, return the permutation of the atoms in the unit cell that corresponds to this translation.
-        '''
-        assert 0 <= dir < self.spatial_dim, f"Translation direction must be between 0 and {self.spatial_dim-1}."
-
-        translated = np.zeros(self.size_of_unit_cell, dtype=int)
-        for pos, s, idx in self.unit_cell_idx:
-            translated[idx] = self._get_idx(pos + self.cell_vectors[dir], s)
-        return Permutation(translated)
-
 
 class Coupling:
     '''
@@ -400,9 +608,6 @@ class Permutation:
             return result
         else:
             return self.inv() ** (-power)
-    def copy(self) -> Permutation:
-        return Permutation(self.perm.copy())
-
     def __hash__(self):
         return hash(tuple(self.perm))
 
@@ -517,113 +722,3 @@ class TrivialGroup(PointGroup):
         return np.array(self._operations[0], dtype=np.float64).reshape(self._shape)
 
 
-class LatticeGroup:
-    '''
-    Full lattice symmetry group  G_latt = G_tr ⋊ G_pt.
-
-    Stores translations, rotations, their induced permutations on
-    unit-cell sites, and the irreducible representations of G_latt.
-    Elements are ordered as (rotation, translation) pairs: for each
-    rotation in the point group, iterate over all translations.
-    '''
-    def __init__(self, model: 'Model'):
-        self.phys_dim = model.physical_dim
-
-        # ── translation vectors ─────────────────────────────────────────
-        self.translations: list[np.ndarray] = []
-        for ns in product(*[range(Ni) for Ni in model.Nvec]):
-            t = sum(n * model.cell_vectors[i] for i, n in enumerate(ns))
-            self.translations.append(t)
-
-        # ── rotation matrices ───────────────────────────────────────────
-        self.rotations: list[np.ndarray] = list(model.point_group)
-
-        self.N_tr = len(self.translations)
-        self.N_pt = len(self.rotations)
-
-        # ── permutations (one per group element) ────────────────────────
-        self.permutations: list[Permutation] = []
-        for op in self.rotations:
-            pt_perm = model._get_permutation_pt(op)
-            for n in product(*[range(Ni) for Ni in model.Nvec]):
-                tr_perm = reduce(lambda x, y: x * y,
-                    [model._get_permutation_tr(i) ** ni
-                     for i, ni in enumerate(n)])
-                self.permutations.append(pt_perm * tr_perm)
-
-        # ── irreducible representations of G_latt ───────────────────────
-        self.all_irrep: dict[tuple[tuple[int, ...], str], np.ndarray] = {}
-        reciprocal_basis = model.bz_cellvectors
-        for ns in product(*[range(Ni) for Ni in model.Nvec]):
-            k = model.momentum_vec(*ns)
-            lg, coset_reps = model.point_group.little_group(k, reciprocal_basis)
-            lg_ops = list(lg)
-            for irrep_label in lg.all_irrps():
-                chars = np.zeros(len(self), dtype=complex)
-                for elem_idx in range(len(self)):
-                    t_idx, r_idx = self.element(elem_idx)
-                    t = self.translations[t_idx]
-                    r = self.rotations[r_idx]
-                    chars[elem_idx] = self._induced_char(
-                        k, t, r, irrep_label, lg, lg_ops, coset_reps)
-                self.all_irrep[(ns, irrep_label)] = chars
-
-    def __len__(self) -> int:
-        return self.N_tr * self.N_pt
-
-    def element(self, idx: int) -> tuple[int, int]:
-        '''Return (translation_index, rotation_index) for the *idx*-th group element.'''
-        return idx % self.N_tr, idx // self.N_tr
-
-    def orbit(self, state: tuple[int, ...],
-              spin_flip: bool = False) -> list[tuple[int, ...]]:
-        '''
-        Compute the orbit of a given state under the action of all permutations
-        in the lattice group.
-
-        Args:
-            state: A tuple of integers representing the initial basis state.
-            spin_flip: If True, also include states obtained by spin-flip
-                       symmetry (s_i → phys_dim - 1 - s_i) followed by
-                       lattice permutations.
-        Returns:
-            A sorted list of unique tuples, each representing a state in the
-            orbit of the initial state.
-        '''
-        orb = [tuple(sym(np.array(state))) for sym in self.permutations]
-        if spin_flip:
-            flipped = tuple(self.phys_dim - 1 - np.array(state))
-            orb += [tuple(sym(np.array(flipped))) for sym in self.permutations]
-        return sorted(set(orb))
-    
-    def _induced_char(self, k: np.ndarray, t: np.ndarray, r: np.ndarray,
-                      irrep_label: str, lg: PointGroup,
-                      lg_ops: list[np.ndarray],
-                      coset_reps: list[np.ndarray]) -> complex:
-        '''
-        Compute  χ_{k,α}(t, r) — the induced character of G_latt.
-        '''
-        chi = 0.0 + 0.0j
-        for g in coset_reps:
-            chi_k = np.exp(1j * np.dot(k, g @ t))
-            grg_inv = g @ r @ g.T
-            if self._op_in_group(grg_inv, lg_ops):
-                chi_alpha = lg.character(irrep_label, grg_inv)
-            else:
-                chi_alpha = 0.0
-            chi += chi_k * chi_alpha
-        return chi
-
-    @staticmethod
-    def _op_in_group(op: np.ndarray, group_ops: list[np.ndarray]) -> bool:
-        for g in group_ops:
-            if np.allclose(op, g):
-                return True
-        return False
-
-    def character(self, sector: tuple[tuple[int, ...], str],
-                  op_idx: int) -> complex:
-        '''
-        Return the character of *sector* at the *op_idx*-th element of G_latt.
-        '''
-        return self.all_irrep[sector][op_idx]
