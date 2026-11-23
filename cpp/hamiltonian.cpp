@@ -162,17 +162,22 @@ SparseMatrix transpose(const SparseMatrix& matrix)
     return out;
 }
 
-std::vector<Complex> multiply(const SparseMatrix& matrix, const std::vector<Complex>& vector)
+std::vector<Complex> multiply(const SparseMatrix& matrix, const std::vector<Complex>& vector,
+                              Workers* workers)
 {
     if (static_cast<int>(vector.size()) != matrix.cols)
         throw std::invalid_argument("mat-vec: the vector has the wrong size");
     std::vector<Complex> out(static_cast<std::size_t>(matrix.rows), Complex{0.0, 0.0});
-    for (int i = 0; i < matrix.rows; ++i) {
-        Complex sum{0.0, 0.0};
-        for (int a = matrix.indptr[i]; a < matrix.indptr[i + 1]; ++a)
-            sum += matrix.data[a] * vector[matrix.indices[a]];
-        out[i] = sum;
-    }
+    const auto rows = [&](int, int begin, int end) {
+        for (int i = begin; i < end; ++i) {
+            Complex sum{0.0, 0.0};
+            for (int a = matrix.indptr[i]; a < matrix.indptr[i + 1]; ++a)
+                sum += matrix.data[a] * vector[matrix.indices[a]];
+            out[i] = sum;
+        }
+    };
+    if (workers == nullptr) rows(0, 0, matrix.rows);
+    else workers->run(matrix.rows, rows);
     return out;
 }
 

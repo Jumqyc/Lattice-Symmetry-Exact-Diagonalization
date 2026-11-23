@@ -43,18 +43,20 @@ using MatrixVector = std::function<std::vector<Complex>(const std::vector<Comple
  */
 std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimension,
                                        int count, int iterations = 200,
-                                       double tolerance = 1e-10);
+                                       double tolerance = 1e-10, int workers = 0);
 
 /**
  * @param matrix a sparse Hermitian matrix.
  * @param count how many eigenvalues, smallest first.
  * @param iterations Arnoldi dimension.
  * @param tolerance convergence threshold on the residual.
+ * @param workers how many threads to use; 0 means one per hardware thread.
  * @detail The same solver, with the product taken from a stored CSR matrix.
  * @short Lowest eigenvalues of a sparse Hermitian matrix.
  * @throws std::runtime_error if a requested Ritz value is not converged.
  */
 std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
-                                       int iterations = 200, double tolerance = 1e-10);
+                                       int iterations = 200, double tolerance = 1e-10,
+                                       int workers = 0);
 
 }  // namespace ed

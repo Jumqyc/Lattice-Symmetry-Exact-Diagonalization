@@ -5,6 +5,7 @@
 
 #include "base_types.h"
 #include "hilbert.h"
+#include "parallel.h"
 
 namespace ed {
 
@@ -101,9 +102,12 @@ SparseMatrix transpose(const SparseMatrix& matrix);
 /**
  * @param matrix a matrix in CSR form.
  * @param vector a dense vector, length ``matrix.cols``.
- * @detail Plain CSR mat-vec; the workhorse of the Lanczos solver.
+ * @param workers the pool to spread the rows over, or null for one thread.
+ * @detail Plain CSR mat-vec, the workhorse of the Lanczos solver; the rows are
+ *         independent and each worker writes only its own slice of the result.
  * @short ``matrix * vector``.
  */
-std::vector<Complex> multiply(const SparseMatrix& matrix, const std::vector<Complex>& vector);
+std::vector<Complex> multiply(const SparseMatrix& matrix, const std::vector<Complex>& vector,
+                              Workers* workers = nullptr);
 
 }  // namespace ed

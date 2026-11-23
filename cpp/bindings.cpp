@@ -92,7 +92,8 @@ PYBIND11_MODULE(_edkern, m)
           py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
           "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues",
-          py::overload_cast<const ed::SparseMatrix&, int, int, double>(&ed::lowest_eigenvalues),
+          py::overload_cast<const ed::SparseMatrix&, int, int, double, int>(&ed::lowest_eigenvalues),
           py::arg("matrix"), py::arg("count"),
-          py::arg("iterations") = 200, py::arg("tolerance") = 1e-10);
+          py::arg("iterations") = 200, py::arg("tolerance") = 1e-10,
+          py::arg("threads") = 0);
 }

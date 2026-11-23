@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "hamiltonian.h"
+#include "parallel.h"
 
 namespace ed {
 
@@ -151,8 +152,16 @@ bool converged(const std::vector<double>& alpha, const std::vector<double>& beta
 
 }  // namespace
 
-std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimension,
-                                       int count, int iterations, double tolerance)
+namespace {
+
+/**
+ * @detail The recurrence itself, on a pool it does not own: the sparse entry
+ *         point below gives it the same pool its product uses, so a step hands
+ *         work to one set of threads instead of two.
+ * @short Lanczos, with the caller's pool.
+ */
+std::vector<double> solve(const MatrixVector& multiply, int dimension, int count,
+                          int iterations, double tolerance, Workers& worker_pool)
 {
     const int n = dimension;
     if (n <= 0) throw std::invalid_argument("the operator has no dimension");
@@ -166,16 +175,63 @@ std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimensi
     // converged
     const int check_every = 20;
 
+    // Every phase of a step -- the product, one dot product, one axpy, the
+    // overlaps with the vectors kept so far -- is short, so the threads are made
+    // once here and the phases hand them work: at a sector of ten thousand
+    // columns a phase is tens of microseconds, and creating threads per phase
+    // would cost as much as the arithmetic.
+    Workers& pool = worker_pool;
+    const auto dot = [&](const std::vector<Complex>& left, const std::vector<Complex>& right) {
+        if (pool.size() <= 1) {
+            Complex sum{0.0, 0.0};
+            for (int i = 0; i < n; ++i) sum += std::conj(left[i]) * right[i];
+            return sum;
+        }
+        std::vector<Complex> partial(static_cast<std::size_t>(pool.size()), Complex{0.0, 0.0});
+        pool.run(n, [&](int index, int begin, int end) {
+            Complex sum{0.0, 0.0};
+            for (int i = begin; i < end; ++i) sum += std::conj(left[i]) * right[i];
+            partial[index] = sum;
+        });
+        Complex total{0.0, 0.0};
+        for (const Complex value : partial) total += value;
+        return total;
+    };
+    const auto norm = [&](const std::vector<Complex>& value) {
+        if (pool.size() <= 1) {
+            double sum = 0.0;
+            for (const auto& entry : value) sum += std::norm(entry);
+            return std::sqrt(sum);
+        }
+        std::vector<double> partial(static_cast<std::size_t>(pool.size()), 0.0);
+        pool.run(n, [&](int index, int begin, int end) {
+            double sum = 0.0;
+            for (int i = begin; i < end; ++i) sum += std::norm(value[i]);
+            partial[index] = sum;
+        });
+        double total = 0.0;
+        for (const double entry : partial) total += entry;
+        return std::sqrt(total);
+    };
+    const auto axpy = [&](std::vector<Complex>& target, Complex alpha,
+                          const std::vector<Complex>& source) {
+        const auto body = [&](int, int begin, int end) {
+            for (int i = begin; i < end; ++i) target[i] -= alpha * source[i];
+        };
+        if (pool.size() <= 1) body(0, 0, n);
+        else pool.run(n, body);
+    };
+
     // deterministic pseudo-random start: a constant vector can be orthogonal to
     // a whole degenerate multiplet, which would hide it from the recurrence
     std::mt19937 rng(20261123u);
     std::normal_distribution<double> normal(0.0, 1.0);
     std::vector<Complex> current(static_cast<std::size_t>(n));
     for (auto& value : current) value = Complex{normal(rng), normal(rng)};
-    double norm = 0.0;
-    for (const auto& value : current) norm += std::norm(value);
-    norm = std::sqrt(norm);
-    for (auto& value : current) value /= norm;
+    double start_norm = 0.0;
+    for (const auto& value : current) start_norm += std::norm(value);
+    start_norm = std::sqrt(start_norm);
+    for (auto& value : current) value /= start_norm;
 
     // the recurrence is kept as its two diagonals: no matrix of the size of the
     // number of steps is ever formed
@@ -192,25 +248,37 @@ std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimensi
     for (int step = 0; step < steps_max; ++step) {
         basis.push_back(current);
         std::vector<Complex> next = multiply(current);
-        Complex alpha_value{0.0, 0.0};
-        for (int i = 0; i < n; ++i) alpha_value += std::conj(current[i]) * next[i];
-        for (int i = 0; i < n; ++i) {
-            next[i] -= alpha_value * current[i];
-            next[i] -= beta_previous * previous[i];
-        }
+        const Complex alpha_value = dot(current, next);
+        axpy(next, alpha_value, current);
+        axpy(next, Complex{beta_previous, 0.0}, previous);
         // full reorthogonalisation, twice: the price of a trustworthy degenerate
-        // spectrum, which is what a symmetry sector always has
-        for (int pass = 0; pass < 2; ++pass)
-            for (const auto& keep : basis) {
-                Complex overlap{0.0, 0.0};
-                for (int i = 0; i < n; ++i) overlap += std::conj(keep[i]) * next[i];
-                for (int i = 0; i < n; ++i) next[i] -= overlap * keep[i];
-            }
+        // spectrum, which is what a symmetry sector always has.  The overlaps are
+        // one range per kept vector, and the subtraction is over the rows, so
+        // the two phases meet at the pool's barrier.
+        std::vector<Complex> overlaps(basis.size(), Complex{0.0, 0.0});
+        for (int pass = 0; pass < 2; ++pass) {
+            const auto project = [&](int, int begin, int end) {
+                for (int j = begin; j < end; ++j) {
+                    Complex sum{0.0, 0.0};
+                    for (int i = 0; i < n; ++i) sum += std::conj(basis[j][i]) * next[i];
+                    overlaps[j] = sum;
+                }
+            };
+            if (pool.size() <= 1) project(0, 0, static_cast<int>(basis.size()));
+            else pool.run(static_cast<int>(basis.size()), project);
+            const auto subtract = [&](int, int begin, int end) {
+                for (int i = begin; i < end; ++i) {
+                    Complex sum{0.0, 0.0};
+                    for (std::size_t j = 0; j < basis.size(); ++j) sum += overlaps[j] * basis[j][i];
+                    next[i] -= sum;
+                }
+            };
+            if (pool.size() <= 1) subtract(0, 0, n);
+            else pool.run(n, subtract);
+        }
         alpha[step] = alpha_value.real();
         if (step > 0) beta[step - 1] = beta_previous;
-        double beta_value = 0.0;
-        for (const auto& value : next) beta_value += std::norm(value);
-        beta_value = std::sqrt(beta_value);
+        const double beta_value = norm(next);
         ++steps;
         beta_end = beta_value;
         if (beta_value < tolerance) {
@@ -224,7 +292,11 @@ std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimensi
         previous = std::move(current);
         beta_previous = beta_value;
         current = std::move(next);
-        for (auto& value : current) value /= beta_value;
+        const auto scale = [&](int, int begin, int end) {
+            for (int i = begin; i < end; ++i) current[i] /= beta_value;
+        };
+        if (pool.size() <= 1) scale(0, 0, n);
+        else pool.run(n, scale);
     }
     if (out.empty()) out = ritz_values(alpha, beta, steps, count);
 
@@ -236,14 +308,27 @@ std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimensi
     return out;
 }
 
+}  // namespace
+
+std::vector<double> lowest_eigenvalues(const MatrixVector& multiply, int dimension,
+                                       int count, int iterations, double tolerance,
+                                       int threads)
+{
+    Workers pool(worker_count(dimension, threads));
+    return solve(multiply, dimension, count, iterations, tolerance, pool);
+}
+
 std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
-                                       int iterations, double tolerance)
+                                       int iterations, double tolerance, int threads)
 {
     if (matrix.rows != matrix.cols) throw std::invalid_argument("the matrix is not square");
     const int n = matrix.rows;
-    return lowest_eigenvalues([&](const std::vector<Complex>& vector) {
-        return multiply(matrix, vector);
-    }, n, count, iterations, tolerance);
+    // one pool for the product and for the phases of the recurrence
+    Workers pool(worker_count(n, threads));
+    const MatrixVector product = [&](const std::vector<Complex>& vector) {
+        return multiply(matrix, vector, &pool);
+    };
+    return solve(product, n, count, iterations, tolerance, pool);
 }
 
 }  // namespace ed
