@@ -43,7 +43,8 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("data", &ed::SparseColumns::data)
         .def("columns", &ed::SparseColumns::columns);
 
-    m.def("momentum_basis", &ed::momentum_basis, py::arg("basis"), py::arg("translations"),
+    m.def("momentum_basis", &ed::momentum_basis,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"), py::arg("translations"),
           py::arg("characters"), "Momentum-adapted orthonormal basis of one sector");
 
     py::class_<ed::SparseMatrix>(m, "SparseMatrix")
@@ -68,7 +69,8 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("act", &ed::PhasedPermutation::act)
         .def_readonly("phase", &ed::PhasedPermutation::phase);
 
-    m.def("sector_action", &ed::sector_action, py::arg("columns"), py::arg("basis"),
+    m.def("sector_action", &ed::sector_action,
+          py::call_guard<py::gil_scoped_release>(), py::arg("columns"), py::arg("basis"),
           py::arg("action"), "Action of one operation on a momentum sector");
 
     py::class_<ed::SectorVectors>(m, "SectorVectors")
@@ -79,12 +81,15 @@ PYBIND11_MODULE(_edkern, m)
 
     m.def("identity_vectors", &ed::identity_vectors, py::arg("column_count"),
           "The sector basis itself, for a trivial little group");
-    m.def("isotypic_basis", &ed::isotypic_basis, py::arg("actions"), py::arg("characters"),
+    m.def("isotypic_basis", &ed::isotypic_basis,
+          py::call_guard<py::gil_scoped_release>(), py::arg("actions"), py::arg("characters"),
           py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
-    m.def("sector_hamiltonian", &ed::sector_hamiltonian, py::arg("basis"),
+    m.def("sector_hamiltonian", &ed::sector_hamiltonian,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("columns"),
           "The Hamiltonian in a momentum-adapted basis, term by term");
-    m.def("block_matrix", &ed::block_matrix, py::arg("matrix"), py::arg("vectors"),
+    m.def("block_matrix", &ed::block_matrix,
+          py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
           "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues",
           py::overload_cast<const ed::SparseMatrix&, int, int, double>(&ed::lowest_eigenvalues),

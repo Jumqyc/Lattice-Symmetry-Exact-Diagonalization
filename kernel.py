@@ -14,6 +14,8 @@ build from the arrays it is given.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -214,6 +216,36 @@ def vectors_to_scipy(vectors, columns: int) -> sp.csc_matrix:
 
 # ── the sector decomposition ──────────────────────────────────────────────────
 
+#: How many momentum sectors are worked on at once; None means one per core,
+#: limited by the scratch each of them needs.  The kernel releases the
+#: interpreter lock around the calls that walk the Hilbert space, so these are
+#: real threads.
+workers: Optional[int] = None
+
+#: Scratch the threads together may spend, in bytes.  One thread holds about
+#: 24 bytes per state while it builds a sector, so a five-by-five lattice with
+#: its five million states caps the count instead of letting it follow the cores.
+memory_budget = 1 << 30
+
+
+def _thread_count(tasks: int, states: int) -> int:
+    '''
+    How many threads to use for *tasks* independent pieces of work.
+
+    Args:
+        tasks: number of pieces.
+        states: size of the computational basis, for the scratch estimate.
+    Returns:
+        The number of workers: at least one, never more than the number of
+        pieces, and -- unless *workers* is set -- never more than both the cores
+        and the memory budget allow.
+    '''
+    if workers is not None:
+        return max(1, min(int(workers), tasks))
+    affordable = max(1, int(memory_budget) // (24 * max(1, states)))
+    return max(1, min(os.cpu_count() or 1, affordable, tasks))
+
+
 def _identity_permutation(count: int) -> '_edkern.PhasedPermutation':
     '''The identity as a phased permutation of *count* columns.'''
     return _edkern.PhasedPermutation(list(range(count)), [1.0 + 0.0j] * count)
@@ -256,13 +288,15 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
     terms = coupling_terms(model)
     translations = globals()["translations"](model)
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
-    out = {}
-    for k in model.tr_group.all_momenta():
+
+    def one(k: tuple[int, ...]) -> dict:
+        '''Every sector that belongs to one momentum label.'''
+        part = {}
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
         columns = _edkern.momentum_basis(basis, translations, characters)
         count = columns.columns()
         if count == 0:
-            continue
+            return part
         sector = _edkern.sector_hamiltonian(basis, terms, columns)
         little, _ = model.little_group(k)
         ops = list(little)
@@ -294,5 +328,17 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
                     continue
                 block = to_scipy(_edkern.block_matrix(sector, vectors))
                 adapted = columns_to_scipy(columns, basis.size()) @ vectors_to_scipy(vectors, count)
-                out[(k, alpha, s)] = (adapted.tocsr(), block.tocsr())
-    return out
+                part[(k, alpha, s)] = (adapted.tocsr(), block.tocsr())
+        return part
+
+    # the momentum sectors are independent, and the kernel releases the
+    # interpreter lock while it walks the Hilbert space, so the loop is spread
+    # over threads instead of the whole decomposition being one thread
+    momenta = model.tr_group.all_momenta()
+    threads = _thread_count(len(momenta), basis.size())
+    if threads == 1:
+        parts = [one(k) for k in momenta]
+    else:
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            parts = list(pool.map(one, momenta))
+    return {key: value for part in parts for key, value in part.items()}

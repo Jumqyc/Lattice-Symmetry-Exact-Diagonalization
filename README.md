@@ -39,7 +39,11 @@ uv pip install -r requirements.txt
 .venv/bin/python cpp/build.py
 ```
 
-`Model.build_sectors` runs on the kernel through `kernel.py`.  The tests take
+`Model.build_sectors` runs on the kernel through `kernel.py`.  The momentum
+sectors are independent, so they are spread over threads (`kernel.workers`, one
+per core by default, capped by `kernel.memory_budget` because each thread holds a
+scratch of the size of the basis); the kernel releases the interpreter lock while
+it walks the Hilbert space, so these are real threads and not a formality.  The tests take
 their oracle from `test/reference.py`, which writes the computational basis out
 with `itertools` and assembles the Hamiltonian densely straight from the
 couplings: dense matrices live there and nowhere else.
