@@ -5,9 +5,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace ed {
+#include "base_types.h"
 
-using Complex = std::complex<double>;
+namespace ed {
 
 /**
  * @detail A basis state is a word of packed local indices, one field per site

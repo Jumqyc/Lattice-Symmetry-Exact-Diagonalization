@@ -3,7 +3,9 @@
 #include <pybind11/stl.h>
 
 #include "group.h"
+#include "hamiltonian.h"
 #include "hilbert.h"
+#include "sector.h"
 
 namespace py = pybind11;
 
@@ -57,4 +59,51 @@ PYBIND11_MODULE(_edkern, m)
 
     m.def("momentum_basis", &ed::momentum_basis, py::arg("basis"), py::arg("translations"),
           py::arg("characters"), "Momentum-adapted orthonormal basis of one sector");
+
+    py::class_<ed::SparseMatrix>(m, "SparseMatrix")
+        .def_readonly("rows", &ed::SparseMatrix::rows)
+        .def_readonly("cols", &ed::SparseMatrix::cols)
+        .def_readonly("indptr", &ed::SparseMatrix::indptr)
+        .def_readonly("indices", &ed::SparseMatrix::indices)
+        .def_readonly("data", &ed::SparseMatrix::data)
+        .def("nonzeros", &ed::SparseMatrix::nonzeros);
+
+    py::class_<ed::LocalTerm>(m, "LocalTerm")
+        .def(py::init<std::vector<int>, std::vector<int>, std::vector<ed::Complex>>(),
+             py::arg("out"), py::arg("in"), py::arg("coeff"));
+
+    py::class_<ed::CouplingTerm>(m, "CouplingTerm")
+        .def(py::init<std::vector<int>, std::vector<ed::LocalTerm>>(),
+             py::arg("sites"), py::arg("local"));
+
+    m.def("assemble", &ed::assemble, py::arg("basis"), py::arg("couplings"),
+          "The Hamiltonian in the computational basis, in CSR form");
+    m.def("symmetrise", &ed::symmetrise, py::arg("matrix"), py::arg("basis"),
+          py::arg("actions"), "Symmetric part of a Hamiltonian");
+    m.def("transpose", &ed::transpose, py::arg("matrix"));
+    m.def("multiply", &ed::multiply, py::arg("matrix"), py::arg("vector"));
+
+    py::class_<ed::PhasedPermutation>(m, "PhasedPermutation")
+        .def_readonly("act", &ed::PhasedPermutation::act)
+        .def_readonly("phase", &ed::PhasedPermutation::phase);
+
+    m.def("sector_action", &ed::sector_action, py::arg("columns"), py::arg("basis"),
+          py::arg("action"), "Action of one operation on a momentum sector");
+
+    py::class_<ed::SectorVectors>(m, "SectorVectors")
+        .def_readonly("start", &ed::SectorVectors::start)
+        .def_readonly("columns", &ed::SectorVectors::columns)
+        .def_readonly("data", &ed::SectorVectors::data)
+        .def_readonly("orbit_of_vector", &ed::SectorVectors::orbit_of_vector)
+        .def("vectors", &ed::SectorVectors::vectors);
+
+    m.def("isotypic_basis", &ed::isotypic_basis, py::arg("actions"), py::arg("characters"),
+          py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
+    m.def("sector_hamiltonian", &ed::sector_hamiltonian, py::arg("hamiltonian"),
+          py::arg("columns"), "The Hamiltonian in a momentum-adapted basis");
+    m.def("block_matrix", &ed::block_matrix, py::arg("matrix"), py::arg("vectors"),
+          "The block of a sector in a set of adapted vectors");
+    m.def("eigenvalues", &ed::eigenvalues, py::arg("block"), py::arg("size"));
+    m.def("lowest_eigenvalues", &ed::lowest_eigenvalues, py::arg("matrix"), py::arg("count"),
+          py::arg("iterations") = 200, py::arg("tolerance") = 1e-10);
 }
