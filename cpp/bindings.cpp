@@ -22,9 +22,9 @@ PYBIND11_MODULE(_edkern, m)
     m.doc() = "C++ kernel of exact diagonalisation: states, actions, sectors";
 
     py::class_<ed::Basis>(m, "Basis")
-        .def(py::init<int, int, std::vector<int>, int>(),
+        .def(py::init<int, int, std::vector<int>, int, bool>(),
              py::arg("sites"), py::arg("local_dim"), py::arg("charge"),
-             py::arg("sztot") = -1)
+             py::arg("sztot") = -1, py::arg("with_table") = true)
         .def("size", &ed::Basis::size, "number of states")
         .def("state", &ed::Basis::state, py::arg("index"), "the packed state")
         .def("index", &ed::Basis::index, py::arg("word"), "index of a packed state")

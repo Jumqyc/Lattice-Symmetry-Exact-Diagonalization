@@ -18,7 +18,7 @@ namespace {
  */
 void walk_term(const Basis& basis, const CouplingTerm& term, const std::vector<int>& digits,
                std::size_t index, std::uint64_t image, Complex amplitude,
-               std::vector<std::pair<int, Complex>>& out)
+               std::vector<std::pair<int, Complex>>& out, bool lookup)
 {
     if (index == term.sites.size()) {
         const int target = basis.index(image);
@@ -35,7 +35,7 @@ void walk_term(const Basis& basis, const CouplingTerm& term, const std::vector<i
         if (local.in[entry] != digits[site]) continue;
         const std::uint64_t shifted = static_cast<std::uint64_t>(local.out[entry]) << shift;
         walk_term(basis, term, digits, index + 1, (image & ~mask) | shifted,
-                  amplitude * local.coeff[entry], out);
+                  amplitude * local.coeff[entry], out, lookup);
     }
 }
 
@@ -86,7 +86,7 @@ void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word
         }
         return;
     }
-    walk_term(basis, term, digits, 0, word, Complex{1.0, 0.0}, out);
+    walk_term(basis, term, digits, 0, word, Complex{1.0, 0.0}, out, true);
 }
 
 PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term)
@@ -115,31 +115,65 @@ PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term)
         prepared.image.push_back(std::move(image));
         prepared.phase.push_back(std::move(phase));
     }
+    // the sites are kept ascending so the incremental rank can walk the span the
+    // term touches without sorting again in the hot loop
+    for (std::size_t i = 0; i + 1 < prepared.site.size(); ++i)
+        for (std::size_t j = i + 1; j < prepared.site.size(); ++j)
+            if (prepared.site[j] < prepared.site[i]) {
+                std::swap(prepared.site[i], prepared.site[j]);
+                std::swap(prepared.shift[i], prepared.shift[j]);
+                std::swap(prepared.image[i], prepared.image[j]);
+                std::swap(prepared.phase[i], prepared.phase[j]);
+            }
     prepared.monomial = true;
     return prepared;
 }
 
 void apply_prepared(const Basis& basis, const PreparedTerm& prepared, std::uint64_t word,
-                    const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out)
+                    const std::vector<int>& digits, const std::vector<int>& prefix,
+                    int source_index, std::vector<std::pair<int, Complex>>& out)
 {
     if (!prepared.monomial) {
-        apply_term(basis, *prepared.term, word, digits, out);
+        std::vector<std::pair<std::uint64_t, Complex>> words;
+        walk_term(basis, *prepared.term, digits, 0, word, Complex{1.0, 0.0}, out, basis.has_table());
         return;
     }
     const int bits = basis.bits();
-    std::uint64_t image = word;
+    if (basis.has_table()) {
+        // the bit vector answers with two reads, so the image word is built and
+        // looked up rather than counted
+        std::uint64_t image = word;
+        Complex coefficient{1.0, 0.0};
+        for (std::size_t position = 0; position < prepared.site.size(); ++position) {
+            const int digit = digits[prepared.site[position]];
+            const int target = prepared.image[position][digit];
+            if (target < 0) return;               // the term annihilates this state
+            const int shift = prepared.shift[position];
+            const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
+            image = (image & ~mask) | (static_cast<std::uint64_t>(target) << shift);
+            coefficient *= prepared.phase[position][digit];
+        }
+        const int found = basis.index(image);
+        if (found >= 0) out.emplace_back(found, coefficient);
+        return;
+    }
+    // no table: the index of the image is the source's index plus the difference
+    // the changed digits make, which is a walk over the span they cover
+    int sites[8];
+    int changed[8];
+    const int count = std::min(static_cast<int>(prepared.site.size()), 8);
     Complex coefficient{1.0, 0.0};
-    for (std::size_t position = 0; position < prepared.site.size(); ++position) {
+    for (int position = 0; position < count; ++position) {
         const int digit = digits[prepared.site[position]];
         const int target = prepared.image[position][digit];
-        if (target < 0) return;               // the term annihilates this state
-        const int shift = prepared.shift[position];
-        const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
-        image = (image & ~mask) | (static_cast<std::uint64_t>(target) << shift);
+        if (target < 0) return;
+        sites[position] = prepared.site[position];
+        changed[position] = target;
         coefficient *= prepared.phase[position][digit];
     }
-    const int target = basis.index(image);
-    if (target >= 0) out.emplace_back(target, coefficient);
+    int image_index = 0;
+    if (basis.index_incremental(digits, prefix, sites, changed, count, source_index, image_index))
+        out.emplace_back(image_index, coefficient);
 }
 
 SparseMatrix transpose(const SparseMatrix& matrix)

@@ -316,15 +316,19 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
         Accumulator scattered(capacity);
         std::vector<std::pair<int, Complex>> merged;
         std::vector<int> digits;
+        std::vector<int> prefix;
         for (int c = begin; c < end; ++c) {
             images.clear();
             for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
                 const int state = columns.indices[a];
                 const Complex weight = columns.data[a];
                 basis.unpack_into(basis.state(state), digits);
+                // the prefix charges are what lets a term reach the index of its
+                // image by the difference the changed digits make
+                if (!basis.has_table()) basis.prefix_charges(digits, prefix);
                 merged.clear();
                 for (const PreparedTerm& term : prepared)
-                    apply_prepared(basis, term, basis.state(state), digits, merged);
+                    apply_prepared(basis, term, basis.state(state), digits, prefix, state, merged);
                 for (const auto& entry : merged) images.add(entry.first, weight * entry.second);
             }
             // the images of the column, scattered over the columns that hold them:

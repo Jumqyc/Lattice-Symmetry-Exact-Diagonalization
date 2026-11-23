@@ -14,16 +14,16 @@ namespace ed {
 namespace {
 
 /**
- * @detail Reserves the direct index table when the whole code space is small
- *         enough to index by the packed word; otherwise a hash map is used and
- *         only the states that survived the charge filter appear in it.
- * @short How many words the direct table can address.
+ * @detail The rank structure is one bit per code-space word plus a sample every
+ *         512 of them, so this is about sixty megabytes: past it the index is
+ *         counted from the suffix table instead of read.
+ * @short The largest code space the bit vector is built for.
  */
-constexpr int kDenseLimit = 1 << 28;   // 2^28 words, about 1 GB of int
+constexpr std::uint64_t kBitsetLimit = 1ull << 29;
 
 }  // namespace
 
-Basis::Basis(int sites, int local_dim, std::vector<int> charge, int sztot)
+Basis::Basis(int sites, int local_dim, std::vector<int> charge, int sztot, bool with_table)
     : sites_(sites), local_dim_(local_dim), charge_(std::move(charge))
 {
     if (sites_ <= 0) throw std::invalid_argument("the lattice has no sites");
@@ -68,6 +68,7 @@ Basis::Basis(int sites, int local_dim, std::vector<int> charge, int sztot)
     sztot_ = sztot;
     constrained_ = sztot >= 0;
     if (constrained_) prepare_counts();
+    if (with_table) prepare_bitset();
 }
 
 void Basis::prepare_counts()
@@ -102,8 +103,115 @@ void Basis::prepare_counts()
         }
 }
 
+void Basis::prepare_bitset()
+{
+    // One bit per code space word plus a sample every 512 of them: at five by five
+    // that is four megabytes and a quarter, which answers a lookup in two
+    // cache-resident reads.  Past about sixty megabytes the structure stops being
+    // the cheaper option and is not built at all -- the index is then counted.
+    space_ = 1;
+    for (int i = 0; i < sites_; ++i) {
+        space_ <<= bits_;
+        if (space_ > kBitsetLimit) return;
+    }
+    bitset_.assign(static_cast<std::size_t>(space_ + 63) / 64, 0);
+    for (int i = 0; i < size(); ++i)
+        bitset_[states_[i] >> 6] |= 1ull << (states_[i] & 63);
+    rank_.assign(static_cast<std::size_t>(space_ >> rank_shift_) + 2, 0);
+    const std::size_t words_per_block = static_cast<std::size_t>(1) << (rank_shift_ - 6);
+    int total = 0;
+    for (std::size_t block = 0; block < rank_.size(); ++block) {
+        rank_[block] = total;
+        const std::size_t begin = block * words_per_block;
+        const std::size_t end = std::min(begin + words_per_block, bitset_.size());
+        for (std::size_t word = begin; word < end; ++word)
+            total += __builtin_popcountll(bitset_[word]);
+    }
+}
+
+void Basis::prefix_charges(const std::vector<int>& digits, std::vector<int>& prefix) const
+{
+    prefix.resize(static_cast<std::size_t>(sites_));
+    int running = 0;
+    for (int k = 0; k < sites_; ++k) {
+        prefix[k] = running;
+        running += charge_[digits[k]];
+    }
+}
+
+bool Basis::index_incremental(const std::vector<int>& digits, const std::vector<int>& prefix,
+                              const int* sites, const int* changed, int count,
+                              int source_index, int& image_index) const
+{
+    if (count == 0) {
+        image_index = source_index;
+        return true;
+    }
+    if (!constrained_) {
+        // without a charge constraint the rank is the mixed-radix value, and two
+        // words that differ in a few digits differ by a few radix positions
+        int delta = 0;
+        for (int i = 0; i < count; ++i) {
+            int weight = 1;
+            for (int k = sites[i] + 1; k < sites_; ++k) weight *= local_dim_;
+            delta += (changed[i] - digits[sites[i]]) * weight;
+        }
+        image_index = source_index + delta;
+        return true;
+    }
+    // the image is in the sector only if the charges still cancel
+    int drift = 0;
+    for (int i = 0; i < count; ++i) drift += charge_[changed[i]] - charge_[digits[sites[i]]];
+    if (drift != 0) return false;
+
+    int delta = 0;
+    int offset = 0;             // charge change from the sites before the current one
+    int next = 0;               // index of the next changed site
+    for (int k = sites[0]; k <= sites[count - 1]; ++k) {
+        const int before_digit = digits[k];
+        const int after_digit = (next < count && sites[next] == k) ? changed[next] : before_digit;
+        // the charge still to be placed after site k: the source's, and the
+        // image's, which differs by the change made at the sites before this one
+        const int remaining_source = sztot_ - prefix[k];
+        const int remaining_image = remaining_source - offset;
+        int before = 0;
+        int after = 0;
+        for (int state = 0; state < before_digit; ++state) {
+            const int rest = remaining_source - charge_[state];
+            if (rest >= low_ && rest <= high_)
+                before += static_cast<int>(count_[static_cast<std::size_t>(k + 1) * width_
+                                                   + (rest - low_)]);
+        }
+        for (int state = 0; state < after_digit; ++state) {
+            const int rest = remaining_image - charge_[state];
+            if (rest >= low_ && rest <= high_)
+                after += static_cast<int>(count_[static_cast<std::size_t>(k + 1) * width_
+                                                  + (rest - low_)]);
+        }
+        delta += after - before;
+        if (after_digit != before_digit) {
+            offset += charge_[after_digit] - charge_[before_digit];
+            ++next;
+        }
+    }
+    image_index = source_index + delta;
+    return true;
+}
+
 int Basis::index(std::uint64_t word) const
 {
+    // the bit vector, when it was built, answers in two reads
+    if (!bitset_.empty()) {
+        if (word >= space_) return -1;
+        if ((bitset_[word >> 6] & (1ull << (word & 63))) == 0) return -1;
+        const std::size_t block = static_cast<std::size_t>(word) >> rank_shift_;
+        int result = rank_[block];
+        const std::uint64_t begin = static_cast<std::uint64_t>(block) << rank_shift_;
+        for (std::uint64_t at = begin; at + 64 <= word; at += 64)
+            result += __builtin_popcountll(bitset_[at >> 6]);
+        result += __builtin_popcountll(bitset_[word >> 6] & ((1ull << (word & 63)) - 1ull));
+        return result;
+    }
     // without a charge constraint every word is in the basis and the enumeration
     // order is the plain mixed-radix one
     if (!constrained_) {

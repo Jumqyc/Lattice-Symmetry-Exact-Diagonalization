@@ -83,13 +83,19 @@ PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term);
  * @param prepared the term, prepared.
  * @param word the packed state to act on.
  * @param digits the same state as local indices.
+ * @param prefix the charge in front of every site of that state.
+ * @param source_index the index of that state in the basis.
  * @param out appended with ``(image index, coefficient)``.
- * @detail Monomial terms are applied with one table lookup per site; anything
- *         else falls back to the general walk.
+ * @detail Monomial terms are applied with one table lookup per site; anything else
+ *         falls back to the general walk.  The index of the image comes from the
+ *         bit vector when there is one, and otherwise from the difference the
+ *         changed digits make to the source's index, which is a walk over the span
+ *         the term covers.
  * @short Append the images of one prepared term.
  */
 void apply_prepared(const Basis& basis, const PreparedTerm& prepared, std::uint64_t word,
-                    const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out);
+                    const std::vector<int>& digits, const std::vector<int>& prefix,
+                    int source_index, std::vector<std::pair<int, Complex>>& out);
 
 /**
  * @param matrix a matrix in CSR form.

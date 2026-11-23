@@ -26,12 +26,16 @@ public:
      * @param local_dim dimension of the local space (the same for every site).
      * @param charge charge of every local state, used to select the sector.
      * @param sztot if not negative, keep only states whose charges sum to it.
+     * @param with_table build the bit vector when it fits, so the index is read
+     *        instead of counted; false forces the counting path, which is what
+     *        the two representations are compared with
      * @detail The states are enumerated with a depth-first walk that prunes on
      *         the remaining charge, so the cost is the number of surviving
      *         states times the local dimension, not ``local_dim^sites``.
      * @short Enumerate the basis.
      */
-    Basis(int sites, int local_dim, std::vector<int> charge, int sztot = -1);
+    Basis(int sites, int local_dim, std::vector<int> charge, int sztot = -1,
+          bool with_table = true);
 
     int size() const { return static_cast<int>(states_.size()); }
     int sites() const { return sites_; }
@@ -58,9 +62,47 @@ public:
      *         ranking of combinations.  Nothing over the code space is stored, so
      *         the lookup needs the same few kilobytes whether the basis has a
      *         thousand states or ten billion; it costs a pass over the digits
-     *         instead of one memory access, which is the trade it makes.
+     *         instead of one memory access, which is the trade it makes.  Both
+     *         are therefore built when the code space is small enough for the bit
+     *         vector -- a few tens of megabytes -- and that path is taken: it is
+     *         the faster of the two, and the counting table is what the sizes
+     *         beyond it fall back on.
      */
     int index(std::uint64_t word) const;
+
+    /**
+     * @param digits the local digits of the state the index is incremented from.
+     * @param prefix the charge in front of every site: ``prefix[k]`` is the sum of
+     *        the charges of the sites before ``k``.
+     * @param sites the sites whose digit differs, ascending.
+     * @param changed the new digit at each of them.
+     * @param count how many sites differ.
+     * @param source_index the index of the state the digits belong to.
+     * @param image_index overwritten with the index of the image.
+     * @return Whether the image is in the sector.
+     * @detail The rank of a word is a sum over its digits, and two words that
+     *         differ at a few sites agree on every digit before the first of them
+     *         and after the last.  Between them the digits are the same but the
+     *         charge still to be placed is shifted by the change so far, which is
+     *         what makes this a walk over the changed span rather than over the
+     *         lattice: a bond costs two table reads, a diagonal term costs none.
+     */
+    bool index_incremental(const std::vector<int>& digits, const std::vector<int>& prefix,
+                           const int* sites, const int* changed, int count,
+                           int source_index, int& image_index) const;
+
+    /** Whether the bit vector was built, in which case index() is the cheaper way. */
+    bool has_table() const { return !bitset_.empty(); }
+
+    /**
+     * @param digits the local digits of one state.
+     * @param prefix overwritten with the charge in front of every site.
+     * @short Fill the prefix charges ``index_delta`` works from.
+     */
+    void prefix_charges(const std::vector<int>& digits, std::vector<int>& prefix) const;
+
+    /** The charge of one local state. */
+    int local_charge(int state) const { return charge_[state]; }
 
     /**
      * @param word packed basis state.
@@ -83,6 +125,12 @@ private:
      */
     void prepare_counts();
 
+    /**
+     * @detail Builds the bit vector and its rank samples, and leaves them empty
+     *         when the code space is larger than they should be.
+     */
+    void prepare_bitset();
+
     int sites_ = 0;
     int local_dim_ = 1;
     int bits_ = 0;
@@ -92,6 +140,12 @@ private:
     // indexed by k * width_ + (charge - low_): the index of a word is a sum over
     // these counts, so no structure over the code space is needed
     std::vector<long long> count_;
+    // the rank structure, present only while it fits: one bit per code-space word
+    // and one sample per 512 of them
+    std::vector<std::uint64_t> bitset_;
+    std::vector<int> rank_;
+    int rank_shift_ = 9;
+    std::uint64_t space_ = 0;
     int low_ = 0;
     int high_ = 0;
     int width_ = 0;

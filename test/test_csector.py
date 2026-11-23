@@ -182,6 +182,34 @@ def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
     return ok
 
 
+def test_representations(model: Model, Sztot, label: str, tol: float = 1e-12,
+                         verbose: bool = True) -> bool:
+    '''
+    The two ways of indexing the basis agree.
+
+    The index of a state is either read from the bit vector or counted from the
+    table of suffix completions, and the second is what a lattice too large for the
+    bit vector falls back on.  The sector Hamiltonian is built both ways from the
+    same couplings: the numbers must not care which one produced them.
+    '''
+    terms = cxx_couplings(model)
+    translations = [cxx_translation(model, t) for t in model.tr_group]
+    produced = {}
+    for with_table in (True, False):
+        basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
+                              list(model.local_charge),
+                              -1 if Sztot is None else Sztot, with_table)
+        characters = [complex(model.tr_group.character((0, 0), t)) for t in model.tr_group]
+        columns = _edkern.momentum_basis(basis, translations, characters)
+        produced[with_table] = to_scipy(_edkern.sector_hamiltonian(basis, terms, columns))
+    worst = float(abs(produced[True] - produced[False]).max())
+    ok = worst < tol
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  {label} index representations: sector Hamiltonian "
+              f"from the bit vector and from the counting table, max difference {worst:.1e}")
+    return ok
+
+
 def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
                        verbose: bool = True) -> bool:
     '''Block matrices, their dimensions and the union of their spectra.'''
@@ -294,6 +322,7 @@ def main():
         model = builder()
         print(f'── {label} ──')
         test_term_by_term(model, sztot, label)
+        test_representations(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
         print()
