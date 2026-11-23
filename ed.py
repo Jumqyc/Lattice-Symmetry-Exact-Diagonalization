@@ -28,7 +28,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 
-from base import PointGroup
+from base import LatticeAction, PointGroup
 from hilbert_action import Permutation, from_lattice_action
 from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
 from representation import TrivialGroup
@@ -81,15 +81,24 @@ class Model:
             supercell_info: one ``(vector, multiplicity)`` pair per direction;
                 the supercell vector is ``vector * multiplicity``.
             cell_info: position of every site inside the cell, keyed by
-                ``(type, index)``.
+                ``(species, label)``.  A symmetry operation may exchange sites
+                of the same species -- the two sublattices of a honeycomb have
+                to share their species for the sixfold rotation to be a
+                symmetry -- but never sites of different species.  The label is
+                only there to make the key unique.
             point_group: the point group of the lattice; a trivial group when
-                None.
+                None.  An element is either a bare ``(d, d)`` rotation about the
+                origin, or a full ``LatticeAction`` -- the latter is how a glide
+                plane or a screw axis enters, since those are a rotation plus a
+                fractional translation.
             MAX_EXTENSION: half-width of the periodically extended copy kept
                 for plotting.
         Raises:
             ValueError: if the point group contains an operation that is not a
-                symmetry of this finite lattice, if two of its operations act
-                as the same site permutation, or if it is not closed.
+                symmetry of this finite lattice -- which includes any operation
+                that would exchange sites of different species -- if two of its
+                operations act as the same site permutation, or if it is not
+                closed.
         '''
         self.physical_dim = phys_dim
         self.lattice = Lattice(supercell_info, cell_info, MAX_EXTENSION)
@@ -109,7 +118,10 @@ class Model:
         self.actions: list[AffineAction] = []
         self.hilbert: list[Permutation] = []
         for op in self.point_group:
-            action = AffineAction.from_matrix(op, self.spatial_dim)
+            # an element may be a bare matrix (a rotation about the origin) or
+            # a full affine action, which is how a glide or a screw enters
+            action = (op if isinstance(op, LatticeAction)
+                      else AffineAction.from_matrix(op, self.spatial_dim))
             perm = from_lattice_action(action, self.lattice)   # rejects non-symmetries
             if tuple(perm.perm) in {tuple(p.perm) for p in self.hilbert}:
                 continue        # duplicated operation

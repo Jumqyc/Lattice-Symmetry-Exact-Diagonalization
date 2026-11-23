@@ -34,7 +34,7 @@ import numpy as np
 
 twod = importlib.import_module('geometry.2dsym')
 from ed import Coupling, Model
-from lattice_action import label_action
+from lattice_action import AffineAction, label_action
 from representation import ExplicitPointGroup, TrivialGroup
 
 X = np.array([[0., 1.], [1., 0.]], dtype=complex)
@@ -322,6 +322,70 @@ def test_rejects_bad_groups(verbose: bool = True) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 4. multi-site cells, species and non-symmorphic elements
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_multi_site_cells(verbose: bool = True) -> bool:
+    '''
+    Species, sublattice exchange and an affine (glide) element.
+
+    A symmetry operation may exchange sites of the *same species*: the two
+    sublattices of a honeycomb are exchanged by the sixfold rotation.  It may
+    not exchange sites of different species, and it may carry a fractional
+    translation, which is what a glide plane is.
+    '''
+    ok = True
+    a1 = np.array([1., 0.])
+    a2 = np.array([0.5, np.sqrt(3.) / 2.])
+    bond = (a1 + a2) / 3.
+    centre = (a1 + a2) / 2.          # a hexagon centre of the honeycomb
+
+    # (i) same species: the sixfold rotation is a symmetry and swaps the sublattices
+    cell = {('C', 0): -bond / 2. - centre, ('C', 1): +bond / 2. - centre}
+    model = Model(2, [(a1, 6), (a2, 6)], cell, point_group=twod.D6())
+    swap = len(model.hilbert) == len(list(twod.D6()))
+    # sites alternate between the two sublattices, so a swap sends even to odd
+    swaps = int(model.actions[1].site_map(model.lattice)[0]) % 2 == 1
+    ok &= swap and swaps
+    if verbose:
+        print(f"  {'✓' if swap and swaps else 'FAIL'}  honeycomb, one species: "
+              f"{len(model.hilbert)}/{len(list(twod.D6()))} distinct permutations, "
+              f"the 60° rotation exchanges the sublattices {swaps}")
+
+    # (ii) different species: exchanging them is not a symmetry
+    cell = {('C', 0): -bond / 2. - centre, ('O', 1): +bond / 2. - centre}
+    rejected = False
+    try:
+        Model(2, [(a1, 6), (a2, 6)], cell, point_group=twod.D6())
+    except ValueError:
+        rejected = True
+    ok &= rejected
+    if verbose:
+        print(f"  {'✓' if rejected else 'FAIL'}  honeycomb with two species: "
+              f"the sublattice exchange is refused")
+
+    # (iii) a glide: reflection in x followed by half a cell along y
+    glide = AffineAction(np.array([[-1., 0.], [0., 1.]]), np.array([0., 0.5]))
+    square = glide @ glide
+    is_translation = bool(np.allclose(square.rotation, np.eye(2))
+                          and np.allclose(square.translation, [0., 1.]))
+    # on a torus one cell tall the square of the glide is the identity, so the
+    # two elements are already a group
+    cell = {('C', 0): np.array([0., 0.]), ('C', 1): np.array([0., 0.5])}
+    model = Model(2, [(np.array([1., 0.]), 4), (np.array([0., 1.]), 1)], cell,
+                  point_group=[np.eye(2), glide])
+    accepted = (len(model.actions) == 2
+                and np.array_equal((model.hilbert[1] * model.hilbert[1]).perm,
+                                   np.arange(model.lattice.size_of_unit_cell)))
+    ok &= is_translation and accepted
+    if verbose:
+        print(f"  {'✓' if is_translation and accepted else 'FAIL'}  glide on a two-site "
+              f"cell: glide^2 is the translation {square.translation.tolist()} "
+              f"{is_translation}, and the element is accepted {accepted}")
+    return ok
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # main
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -332,7 +396,8 @@ def main():
                      ('bad groups refused', test_rejects_bad_groups),
                      ('sector spectra', test_sector_spectra),
                      ('sector dimensions', test_dimensions_from_characters),
-                     ('sector labels', test_sector_labels)]:
+                     ('sector labels', test_sector_labels),
+                     ('multi-site cells', test_multi_site_cells)]:
         print(f'── {name} ──')
         results[name] = fn()
         print()

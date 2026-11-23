@@ -189,8 +189,12 @@ class Lattice:
         Args:
             supercell_info: one ``(vector, multiplicity)`` pair per lattice
                 direction; the supercell vectors are ``vector * multiplicity``.
-            cell_info: site type and position inside the unit cell, keyed by
-                ``(type, index)``.
+            cell_info: position of every site inside the cell, keyed by
+                ``(species, label)``.  The species is the equivalence class a
+                symmetry operation has to preserve -- two sites of the same
+                species may be exchanged (the two sublattices of a honeycomb,
+                say), two sites of different species may not.  The label only
+                has to make the key unique.
             MAX_EXTENSION: half-width of the periodically extended copy, kept
                 for plotting only.
         Raises:
