@@ -18,14 +18,25 @@ and must not depend on geometry.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import product
-from typing import Iterator
+from typing import Iterator, Optional
 
+import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 
-from base import PointGroup
+from base import LatticeAction, PointGroup
 from representation import (ExplicitPointGroup, TrivialGroup, _right_coset_representatives,
                             _unique_ops)
+
+
+# positions are compared after rounding to this many decimals; a symmetry
+# operation maps a site onto another site only up to a supercell-lattice vector
+_POS_TOL_DIGITS = 8
+# a position is on a lattice site if its coordinates are integral to this
+# tolerance (in units of the supercell vectors)
+_POS_TOL = 1e-6
 
 
 class TranslationGroup:
@@ -158,3 +169,239 @@ def little_group(point_group: PointGroup, k: tuple[int, ...],
     else:
         group = ExplicitPointGroup(preserving)
     return group, coset_reps
+
+
+class Lattice:
+    '''
+    Geometry of the finite lattice: the supercell, its sites and an exact
+    position lookup.
+
+    Sites are addressed by their type and by their position modulo the
+    supercell lattice, so a symmetry operation may land on any periodic image
+    of a site and still be recognised.
+    '''
+
+    def __init__(self,
+                 supercell_info: list[tuple[np.ndarray, int]],
+                 cell_info: dict[tuple[str, int], np.ndarray],
+                 MAX_EXTENSION: int = 1):
+        '''
+        Args:
+            supercell_info: one ``(vector, multiplicity)`` pair per lattice
+                direction; the supercell vectors are ``vector * multiplicity``.
+            cell_info: site type and position inside the unit cell, keyed by
+                ``(type, index)``.
+            MAX_EXTENSION: half-width of the periodically extended copy, kept
+                for plotting only.
+        Raises:
+            TypeError: if a supercell vector is not a numpy array.
+            ValueError: if the vectors have inconsistent dimensions, if a
+                multiplicity is not a positive integer, or if two sites of the
+                same type share a position.
+        '''
+        self.spatial_dim = len(supercell_info[0])
+
+        if not all(isinstance(vec, np.ndarray) for vec, _ in supercell_info):
+            raise TypeError("All supercell vectors must be numpy arrays.")
+        if not all(len(vec) == self.spatial_dim for vec, _ in supercell_info):
+            raise ValueError("All supercell vectors must have the same dimension {}."
+                             .format(self.spatial_dim))
+        if not all(isinstance(m, int) and m > 0 for _, m in supercell_info):
+            raise ValueError("All multiplicities must be positive integers.")
+
+        self.cell_vectors: NDArray[np.float64] = np.array([vec for vec, _ in supercell_info])
+        self.Nvec: NDArray[np.int64] = np.array([m for _, m in supercell_info])
+        self.supercell_vectors: NDArray[np.float64] = self.cell_vectors * self.Nvec[:, np.newaxis]
+        if not self.cell_vectors.shape == (self.spatial_dim, self.spatial_dim):
+            raise ValueError("The number of supercell vectors must match the spatial dimension.")
+        self.bz_cellvectors = 2 * np.pi * np.linalg.inv(self.supercell_vectors).T
+
+        self.unit_cell_idx: list[tuple[np.ndarray, str, int]] = []
+        for n in product(*[range(m) for _, m in supercell_info]):
+            for (s, _), vec in cell_info.items():
+                # centering the cell at the origin and giving every atom a unique index
+                self.unit_cell_idx.append(
+                    (vec + np.array(n) @ self.cell_vectors, s, len(self.unit_cell_idx)))
+        self.size_of_unit_cell = len(self.unit_cell_idx)
+
+        self._site_lookup: dict[tuple[str, tuple[float, ...]], int] = {}
+        for pos, s, idx in self.unit_cell_idx:
+            key = (s, self.position_key(pos))
+            if key in self._site_lookup:
+                raise ValueError(f"Two sites of type {s!r} occupy the same position {pos}.")
+            self._site_lookup[key] = idx
+
+        # periodically extended copy, used for plotting only
+        self.extended_cell = []
+        for pos, s, idx in self.unit_cell_idx:
+            for n in product(range(-MAX_EXTENSION, MAX_EXTENSION + 1),
+                             repeat=self.spatial_dim):
+                self.extended_cell.append(
+                    (pos + np.array(n) @ self.supercell_vectors, s, idx))
+
+    def position_key(self, pos: np.ndarray) -> tuple[float, ...]:
+        '''
+        Fractional coordinates of *pos* in the supercell basis, modulo one cell.
+
+        Args:
+            pos: Cartesian position.
+        Returns:
+            The fractional coordinates, each reduced into ``[0, 1)`` and rounded
+            to ``_POS_TOL_DIGITS`` decimals.  Positions that differ by a
+            supercell-lattice vector give the same key.
+        '''
+        frac = np.asarray(pos, dtype=float) @ np.linalg.inv(self.supercell_vectors)
+        frac = frac - np.floor(frac + 1e-9)
+        return tuple(np.round(frac, _POS_TOL_DIGITS))
+
+    def site_index(self, pos: np.ndarray, s: str) -> int:
+        '''
+        Index of the site of type *s* sitting at *pos*, modulo the supercell lattice.
+
+        Args:
+            pos: Cartesian position of a site, up to a supercell-lattice vector.
+            s: site type.
+        Raises:
+            ValueError: if no site of type *s* sits at that position.
+        '''
+        key = (s, self.position_key(pos))
+        if key not in self._site_lookup:
+            raise ValueError(f"No site of type {s!r} at {np.asarray(pos).round(6).tolist()}.")
+        return self._site_lookup[key]
+
+    def plot(self, ax: Optional[plt.Axes] = None, extend: bool = False) -> plt.Axes:
+        '''
+        Plot the lattice.
+
+        Args:
+            ax: the axes to draw on; a new figure is made when None.
+            extend: also draw the periodically extended copy.
+        Returns:
+            The axes.
+        '''
+        if ax is None:
+            _, ax = plt.subplots(figsize=(6, 6))
+        if extend:
+            for pos, _, idx in self.extended_cell:
+                ax.scatter(*pos, color='blue', alpha=0.6)
+                ax.text(*pos, str(idx), fontsize=8, ha='center', va='center')
+        for pos, _, idx in self.unit_cell_idx:
+            ax.scatter(*pos, color='red', alpha=0.8)
+            ax.text(*pos, str(idx), fontsize=10, ha='center', va='center', color='white')
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_title('Lattice Structure')
+        return ax
+
+    def set_center_at(self, center: int | np.ndarray):
+        '''
+        Shift the origin to a site index or to a position.
+
+        Args:
+            center: index of a site, or a Cartesian position to put at the origin.
+        Raises:
+            ValueError: if the index is out of range.
+        '''
+        if isinstance(center, int):
+            if not (0 <= center < self.size_of_unit_cell):
+                raise ValueError(f"Center index must be between 0 and {self.size_of_unit_cell-1}.")
+            center_pos, _, _ = self.unit_cell_idx[center]
+        else:
+            center_pos = np.asarray(center)
+        self.extended_cell = [(pos - center_pos, s, idx) for pos, s, idx in self.extended_cell]
+        self.unit_cell_idx = [(pos - center_pos, s, idx) for pos, s, idx in self.unit_cell_idx]
+
+
+@dataclass(frozen=True)
+class AffineAction(LatticeAction):
+    '''
+    One element of the space group:  x -> R x + t.
+
+    ``translation`` is the fractional part of the operation.  It vanishes for
+    every element of a symmorphic space group; it is what makes a glide plane
+    or a screw axis expressible, since such an operation is a rotation plus a
+    non-lattice translation.
+
+    Attributes:
+        rotation: ``(d, d)`` orthogonal matrix.
+        translation: ``(d,)`` translation, reduced modulo the supercell lattice.
+    '''
+    rotation: np.ndarray
+    translation: np.ndarray
+
+    @staticmethod
+    def from_matrix(op: np.ndarray, spatial_dim: int) -> 'AffineAction':
+        '''
+        Build an action from the bare coordinate matrix stored by a point group.
+
+        Args:
+            op: a ``(d, d)`` matrix, or a scalar for the trivial group.
+            spatial_dim: expected spatial dimension.
+        Returns:
+            The action, with a zero translation.
+        Raises:
+            ValueError: if *op* does not have the expected shape.
+        '''
+        arr = np.asarray(op, dtype=float)
+        if arr.ndim == 0:
+            return AffineAction(np.eye(spatial_dim), np.zeros(spatial_dim))
+        if arr.shape != (spatial_dim, spatial_dim):
+            raise ValueError(
+                f"Transformation matrix must be of shape ({spatial_dim}, {spatial_dim}), "
+                f"got {arr.shape}.")
+        return AffineAction(arr, np.zeros(spatial_dim))
+
+    def __matmul__(self, other: 'AffineAction') -> 'AffineAction':
+        '''``(R1,t1)(R2,t2) = (R1 R2, t1 + R1 t2)``.'''
+        if not isinstance(other, AffineAction):
+            raise TypeError("Can only compose with another AffineAction.")
+        return AffineAction(self.rotation @ other.rotation,
+                            self.translation + self.rotation @ other.translation)
+
+    def inverse(self) -> 'AffineAction':
+        '''The inverse element ``(R,t)^{-1} = (Rᵀ, -Rᵀt)``.'''
+        return AffineAction(self.rotation.T, -self.rotation.T @ self.translation)
+
+    def apply(self, pos: np.ndarray) -> np.ndarray:
+        '''``x -> R x + t``.'''
+        return self.rotation @ np.asarray(pos, dtype=float) + self.translation
+
+    def site_map(self, lattice: Lattice) -> np.ndarray:
+        '''
+        Permutation of the sites of *lattice*.
+
+        Args:
+            lattice: the lattice the operation acts on.
+        Returns:
+            ``image[i]``: the site that site ``i`` is mapped onto.
+        Raises:
+            ValueError: if the operation does not map the sites onto the sites,
+                or if it maps two sites onto the same one -- either way it is
+                not a symmetry of the finite lattice.
+        '''
+        image = np.zeros(lattice.size_of_unit_cell, dtype=int)
+        for pos, s, idx in lattice.unit_cell_idx:
+            try:
+                image[idx] = lattice.site_index(self.apply(pos), s)
+            except ValueError:
+                raise ValueError(
+                    f"Operation {self.rotation.tolist()} does not map the site {idx} at "
+                    f"{np.asarray(pos).round(6).tolist()} onto a site of the supercell: it is "
+                    f"not a symmetry of this lattice. Either enlarge the supercell or drop "
+                    f"this operation.") from None
+        if not np.array_equal(np.sort(image), np.arange(lattice.size_of_unit_cell)):
+            raise ValueError(
+                f"Operation {self.rotation.tolist()} maps several sites onto the same site: it "
+                f"does not preserve the supercell lattice spanned by "
+                f"{lattice.supercell_vectors.tolist()}.")
+        return image
+
+    def label_action(self, supercell_vectors: np.ndarray) -> np.ndarray:
+        '''Integer action on the momentum labels, see :func:`label_action`.'''
+        return label_action(self.rotation, supercell_vectors)
+
+    def preserves_momentum(self, k: tuple[int, ...], supercell_vectors: np.ndarray,
+                           Nvec: np.ndarray) -> bool:
+        '''Whether this operation leaves the momentum label *k* invariant.'''
+        return preserves_momentum(self.rotation, k, supercell_vectors, Nvec)

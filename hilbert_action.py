@@ -27,8 +27,10 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from base import HilbertAction
 
-class Permutation:
+
+class Permutation(HilbertAction):
     '''
     A site permutation of the unit cell.
 
@@ -56,6 +58,10 @@ class Permutation:
         elif isinstance(x, np.ndarray):
             return x[self.perm]
 
+    def on_state(self, state: tuple[int, ...]) -> tuple[tuple[int, ...], complex]:
+        '''``U(g)|state> = |state'>`` with phase one.'''
+        return tuple(self(np.array(state))), 1.0 + 0.0j
+
     def __mul__(self, other: 'Permutation') -> 'Permutation':
         if not isinstance(other, Permutation):
             raise TypeError("Can only multiply with another Permutation.")
@@ -77,3 +83,25 @@ class Permutation:
             return self.inv() ** (-power)
     def __hash__(self):
         return hash(tuple(self.perm))
+
+
+def from_lattice_action(action, lattice) -> Permutation:
+    '''
+    Turn a geometric operation into its action on the computational basis.
+
+    The geometric action moves the sites; on the basis states it acts as a site
+    permutation, ``U(g)|σ_1 … σ_L> = |σ_{g^{-1}(1)} … σ_{g^{-1}(L)}>``, which is
+    what :class:`Permutation` stores.  Any local orbital action is monomial (the
+    interface of this module), so it contributes a phase rather than a
+    superposition; that phase is carried by the momentum basis, not here.
+
+    Args:
+        action: a ``LatticeAction``, i.e. something with ``site_map(lattice)``.
+        lattice: the lattice the operation acts on.
+    Returns:
+        The site permutation of the operation.
+    Raises:
+        ValueError: if the operation does not permute the sites.
+    '''
+    image = action.site_map(lattice)
+    return Permutation(np.argsort(image))

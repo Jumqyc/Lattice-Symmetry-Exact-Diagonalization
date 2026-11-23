@@ -91,3 +91,56 @@ class PointGroup(ABC):
             The dimension as an integer.
         '''
         return int(round(float(np.real(self.character(irrep, self.identity())))))
+
+
+class LatticeAction(ABC):
+    '''
+    One element of the space group, seen as a map on the lattice.
+
+    This is the geometry layer: an element knows how to move the sites and how
+    to move the momentum labels.  It knows nothing about the Hilbert space --
+    turning it into an operator on the computational basis is the job of
+    :class:`HilbertAction`.
+    '''
+
+    @abstractmethod
+    def __matmul__(self, other: 'LatticeAction') -> 'LatticeAction':
+        '''Group multiplication: apply *other* first, then *self*.'''
+
+    @abstractmethod
+    def site_map(self, lattice) -> np.ndarray:
+        '''
+        Permutation of the sites of *lattice*.
+
+        Returns:
+            ``image[i]`` is the site that site ``i`` is mapped onto.
+        Raises:
+            ValueError: if the operation does not map the sites onto the sites.
+        '''
+
+    @abstractmethod
+    def label_action(self, supercell_vectors: np.ndarray) -> np.ndarray:
+        '''
+        Integer matrix M acting on the momentum labels, ``k -> Mᵀ k``.
+        '''
+
+
+class HilbertAction(ABC):
+    '''
+    One symmetry operation, seen as a map on the computational basis.
+
+    The interface is deliberately narrow: an operation maps one basis state
+    onto *one* basis state, times a phase,
+
+        U(g)|σ> = φ(σ) |σ'>.
+
+    That is what keeps every projection in the computational basis cheap.  An
+    operation whose local action mixes components is not expressible here, and
+    it must not be: it would turn a single basis state into an exponential
+    superposition.  A monomial local basis -- in two dimensions the circular
+    harmonics ``(x ± iy)^m`` -- always avoids it.
+    '''
+
+    @abstractmethod
+    def on_state(self, state: tuple[int, ...]) -> tuple[tuple[int, ...], complex]:
+        '''``U(g)|state> = phase |state'>``; returns ``(state', phase)``.'''

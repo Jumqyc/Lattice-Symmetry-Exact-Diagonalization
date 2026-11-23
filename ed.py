@@ -24,22 +24,14 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 
 from base import PointGroup
-from hilbert_action import Permutation
-from lattice_action import TranslationGroup, little_group
-
-
-# positions are compared after rounding to this many decimals; a symmetry
-# operation maps a site onto another site only up to a supercell-lattice vector
-_POS_TOL_DIGITS = 8
-# a position is on a lattice site if its coordinates are integral to this
-# tolerance (in units of the supercell vectors)
-_POS_TOL = 1e-6
+from hilbert_action import Permutation, from_lattice_action
+from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
+from representation import TrivialGroup
 
 
 # key of a sector: (momentum label, little-group irrep, spin-flip parity)
@@ -82,129 +74,100 @@ class Model:
                  MAX_EXTENSION = 1
                  ):
         '''
-        Initialize a Lattice object. A lattice (supercell) is defined by its reciprocal vectors and their multiplicities, as well as additional cell information.
-        
+        Initialize a lattice model.
+
         Args:
-            phys_dim: The physical dimension of the lattice.
-            supercell_info: A variable number of tuples, each containing a supercell vector (as a numpy array) and its multiplicity (as an integer). Eventually, the supercell vectors will be multiplied by their respective multiplicities to form the complete supercell.
-            cell_info: Additional information about the cell, provided as keyword arguments. Each key is a tuple of (atom_type, atom_index), and each value is a numpy array representing the atom's position in the cell.
-            point_group: An optional PointGroup object representing the symmetries of the lattice. If not provided, a trivial point group will be used.
-            MAX_EXTENSION: The maximum extension for the periodic boundary conditions.
+            phys_dim: dimension of the local Hilbert space of one site.
+            supercell_info: one ``(vector, multiplicity)`` pair per direction;
+                the supercell vector is ``vector * multiplicity``.
+            cell_info: position of every site inside the cell, keyed by
+                ``(type, index)``.
+            point_group: the point group of the lattice; a trivial group when
+                None.
+            MAX_EXTENSION: half-width of the periodically extended copy kept
+                for plotting.
+        Raises:
+            ValueError: if the point group contains an operation that is not a
+                symmetry of this finite lattice, if two of its operations act
+                as the same site permutation, or if it is not closed.
         '''
-        self.spatial_dim = len(supercell_info[0])
         self.physical_dim = phys_dim
+        self.lattice = Lattice(supercell_info, cell_info, MAX_EXTENSION)
+        self.spatial_dim = self.lattice.spatial_dim
+        self.point_group = TrivialGroup() if point_group is None else point_group
 
-        if not all(isinstance(vec, np.ndarray) for vec, _ in supercell_info):
-            raise TypeError("All supercell vectors must be numpy arrays.")
-        if not all(len(vec) == self.spatial_dim for vec, _ in supercell_info):
-            raise ValueError("All supercell vectors must have the same dimension {}.".format(self.spatial_dim))
-        if not all(isinstance(m, int) and m > 0 for _, m in supercell_info):
-            raise ValueError("All multiplicities must be positive integers.")
+        # ── translation group and its elementary site permutations ──────
+        self.tr_group = TranslationGroup(tuple(int(n) for n in self.lattice.Nvec),
+                                         self.lattice.cell_vectors)
+        self._elem_tr_perms: list[Permutation] = [
+            Permutation(np.argsort(np.array([
+                self.lattice.site_index(pos + self.lattice.cell_vectors[i], s)
+                for pos, s, _ in self.lattice.unit_cell_idx])))
+            for i in range(self.spatial_dim)]
 
-        self.cell_vectors: NDArray[np.float64] = np.array([vec for vec, _ in supercell_info])
-        self.Nvec: NDArray[np.int64] = np.array([m for _, m in supercell_info])
-        self.supercell_vectors: NDArray[np.float64] = self.cell_vectors * self.Nvec[:, np.newaxis]
+        # ── point-group actions: geometry -> permutation of the basis ───
+        self.actions: list[AffineAction] = []
+        self.hilbert: list[Permutation] = []
+        for op in self.point_group:
+            action = AffineAction.from_matrix(op, self.spatial_dim)
+            perm = from_lattice_action(action, self.lattice)   # rejects non-symmetries
+            if tuple(perm.perm) in {tuple(p.perm) for p in self.hilbert}:
+                continue        # duplicated operation
+            self.actions.append(action)
+            self.hilbert.append(perm)
 
-        if not self.cell_vectors.shape == (self.spatial_dim, self.spatial_dim):
-            raise ValueError("The number of supercell vectors must match the spatial dimension.")
-
-        self.bz_cellvectors = 2*np.pi*np.linalg.inv(self.supercell_vectors).T
-
-        self.unit_cell_idx: list[tuple[np.ndarray,str, int]] = []
-        for n in product(*[range(m) for _, m in supercell_info]):
-            for (s,_),vec in cell_info.items():
-                self.unit_cell_idx.append(
-                    (vec + np.array(n) @ self.cell_vectors ,
-                    s,
-                    len(self.unit_cell_idx))) 
-                    # centering the cell at the origin and assigning a unique index to each atom
-        self.size_of_unit_cell = len(self.unit_cell_idx)
-
-        # ── exact site lookup ──────────────────────────────────────────
-        # a site is keyed by its fractional coordinates in the supercell basis,
-        # reduced modulo one supercell vector: the same key is then obtained
-        # whatever representative of the position a symmetry operation lands on
-        self._site_lookup: dict[tuple[str, tuple[float, ...]], int] = {}
-        for pos, s, idx in self.unit_cell_idx:
-            key = (s, self._position_key(pos))
-            if key in self._site_lookup:
-                raise ValueError(f"Two sites of type {s!r} occupy the same position {pos}.")
-            self._site_lookup[key] = idx
-
-        # extending by PBC (used for plotting only; site lookup is exact):
-        self.extended_cell = []
-        # dumb implementation by storing all possible positions
-        for pos, s, idx in self.unit_cell_idx: 
-            # to avoid modifying the list while iterating over it
-            for n in product(
-                        range(-MAX_EXTENSION, MAX_EXTENSION + 1),
-                        repeat=self.spatial_dim):
-                self.extended_cell.append(
-                    (pos + np.array(n) @ self.supercell_vectors, s, idx)
-                )
-
-        if point_group is None:
-            self.point_group = TrivialGroup()
-        else:
-            self.point_group = point_group
-
-        # ── translation group ──────────────────────────────────────────
-        self.tr_group = TranslationGroup(
-            tuple(int(n) for n in self.Nvec), self.cell_vectors)
-
-        # ── elementary permutations (d + |G_pt| stored, not the product) ─
-        self._elem_tr_perms: list[Permutation] = []
-        for i in range(self.spatial_dim):
-            translated = np.zeros(self.size_of_unit_cell, dtype=int)
-            for pos, s, idx in self.unit_cell_idx:
-                translated[idx] = self._site_index(pos + self.cell_vectors[i], s)
-            self._elem_tr_perms.append(Permutation(np.argsort(translated)))
-
-        # ── point-group permutations, validated as isometries of the torus ─
-        self.point_group_ops: list[np.ndarray] = []
-        self._pt_perms: list[Permutation] = []
-        for arr in self.point_group:
-            if arr.ndim != 0:
-                assert arr.shape == (self.spatial_dim, self.spatial_dim), \
-                    f"Transformation matrix must be of shape ({self.spatial_dim}, {self.spatial_dim}), got {arr.shape}."
-            image = np.zeros(self.size_of_unit_cell, dtype=int)
-            for pos, s, idx in self.unit_cell_idx:
-                transformed_pos = arr * pos if arr.ndim == 0 else arr @ pos
-                try:
-                    image[idx] = self._site_index(transformed_pos, s)
-                except ValueError:
-                    raise ValueError(
-                        f"Point-group operation {np.asarray(arr).tolist()} does not map the "
-                        f"site {idx} at {np.asarray(pos).round(6).tolist()} onto a site of the "
-                        f"supercell: it is not a symmetry of this lattice. Either enlarge the "
-                        f"supercell or drop this operation.") from None
-            if not np.array_equal(np.sort(image), np.arange(self.size_of_unit_cell)):
-                raise ValueError(
-                    f"Point-group operation {np.asarray(arr).tolist()} maps several sites onto "
-                    f"the same site: it does not preserve the supercell lattice spanned by "
-                    f"{self.supercell_vectors.tolist()}.")
-            if tuple(np.argsort(image)) in {tuple(p.perm) for p in self._pt_perms}:
-                continue    # duplicated operation
-            self.point_group_ops.append(np.asarray(arr, dtype=float))
-            self._pt_perms.append(Permutation(np.argsort(image)))
-
-        # the permutation set must be closed, otherwise "G_pt" is not a group
-        perms = {tuple(p.perm) for p in self._pt_perms}
-        for a in self._pt_perms:
-            for b in self._pt_perms:
+        # the permutation set must be closed, otherwise it is not a group
+        perms = {tuple(p.perm) for p in self.hilbert}
+        for a in self.hilbert:
+            for b in self.hilbert:
                 if tuple((a * b).perm) not in perms:
                     raise ValueError(
                         f"The supplied point group is not closed: the product of two of its "
-                        f"operations is not in the set ({len(self._pt_perms)} distinct "
+                        f"operations is not in the set ({len(self.hilbert)} distinct "
                         f"operations). Complete the group before building the model.")
 
         self.couplings: list[Coupling] = []
-    
+
+    # ── geometry facade: the data lives on self.lattice ─────────────────
+    # these are delegations, not copies, so there is one source of truth
+
+    @property
+    def size_of_unit_cell(self) -> int:
+        '''Number of sites in the supercell.'''
+        return self.lattice.size_of_unit_cell
+
+    @property
+    def unit_cell_idx(self) -> list[tuple[np.ndarray, str, int]]:
+        '''``(position, type, index)`` of every site.'''
+        return self.lattice.unit_cell_idx
+
+    @property
+    def cell_vectors(self) -> NDArray[np.float64]:
+        '''Rows are the unit cell vectors.'''
+        return self.lattice.cell_vectors
+
+    @property
+    def Nvec(self) -> NDArray[np.int64]:
+        '''Multiplicities of the unit cell vectors.'''
+        return self.lattice.Nvec
+
+    @property
+    def supercell_vectors(self) -> NDArray[np.float64]:
+        '''Rows are the supercell vectors.'''
+        return self.lattice.supercell_vectors
+
+    @property
+    def bz_cellvectors(self) -> NDArray[np.float64]:
+        '''Rows are the reciprocal vectors of the supercell.'''
+        return self.lattice.bz_cellvectors
+
+
+
     def add_coupling(self,
                      coupling: Coupling
                      ):
-        if min(coupling.sites) < 0 or max(coupling.sites) >= self.size_of_unit_cell:
-            raise ValueError(f"Coupling sites {coupling.sites} are out of bounds for unit cell size {self.size_of_unit_cell}.")
+        if min(coupling.sites) < 0 or max(coupling.sites) >= self.lattice.size_of_unit_cell:
+            raise ValueError(f"Coupling sites {coupling.sites} are out of bounds for unit cell size {self.lattice.size_of_unit_cell}.")
 
         for i, existing in enumerate(self.couplings):
             if existing.sites == coupling.sites:
@@ -229,7 +192,7 @@ class Model:
             from a state to its row index.
         '''
         states = [s for s in product(range(self.physical_dim),
-                                     repeat=self.size_of_unit_cell)
+                                     repeat=self.lattice.size_of_unit_cell)
                   if Sztot is None or sum(s) == Sztot]
         return states, {s: i for i, s in enumerate(states)}
 
@@ -282,12 +245,12 @@ class Model:
                         raw_acc[(i, j)] += coeff
 
         # symmetrize: accumulate (1/|G|) Σ_g g H_raw g^{-1} into sparse dict
-        n_g = len(self.tr_group) * len(self._pt_perms)
+        n_g = len(self.tr_group) * len(self.hilbert)
         sym_acc: dict[tuple[int, int], complex] = defaultdict(complex)
 
         # precompute forward permutation for each group element
         for t in self.tr_group:
-            for r_idx in range(len(self._pt_perms)):
+            for r_idx in range(len(self.hilbert)):
                 perm = self._permutation(t, r_idx)
                 pfwd = np.zeros(n, dtype=int)
                 for i, s in enumerate(states):
@@ -332,12 +295,12 @@ class Model:
 
     def _permutation(self, t: tuple[int, ...], r_idx: int) -> Permutation:
         '''Compose  φ(t, r) = φ_tr(t) ∘ φ_pt(r)  on the fly.'''
-        n_sites = self.size_of_unit_cell
+        n_sites = self.lattice.size_of_unit_cell
         tr_perm = Permutation(np.arange(n_sites))
         for i, ti in enumerate(t):
             if ti:
                 tr_perm = tr_perm * (self._elem_tr_perms[i] ** ti)
-        return tr_perm * self._pt_perms[r_idx]
+        return tr_perm * self.hilbert[r_idx]
 
     # ── Orbit ─────────────────────────────────────────────────────────────
 
@@ -355,13 +318,13 @@ class Model:
         '''
         orb = []
         for t in self.tr_group:
-            for r_idx in range(len(self._pt_perms)):
+            for r_idx in range(len(self.hilbert)):
                 perm = self._permutation(t, r_idx)
                 orb.append(tuple(perm(np.array(state))))
         if spin_flip:
             flipped = tuple(self.physical_dim - 1 - np.array(state))
             for t in self.tr_group:
-                for r_idx in range(len(self._pt_perms)):
+                for r_idx in range(len(self.hilbert)):
                     perm = self._permutation(t, r_idx)
                     orb.append(tuple(perm(np.array(flipped))))
         return sorted(set(orb))
@@ -503,7 +466,7 @@ class Model:
             invariant, and a list of representatives of the *right* cosets
             ``G_k \\ G_pt`` (used only by the induced-character test).
         '''
-        return little_group(self.point_group, k, self.supercell_vectors, self.Nvec)
+        return little_group(self.point_group, k, self.lattice.supercell_vectors, self.lattice.Nvec)
 
     def _isotypic_basis(self, lg: PointGroup, alpha: str,
                         ops: list[np.ndarray],
@@ -575,7 +538,7 @@ class Model:
             :class:`Sector` objects holding the basis and the block Hamiltonian.
         '''
         if spin_flip and Sztot is not None and \
-                2 * Sztot != self.size_of_unit_cell * (self.physical_dim - 1):
+                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
             raise ValueError(
                 "The spin flip maps sum(state) == Sztot onto "
                 "L(d-1) - Sztot; it is a symmetry of a single sector only when "
@@ -637,100 +600,16 @@ class Model:
             op: an operation of ``self.point_group``.
         Returns:
             The corresponding site permutation.
+        Raises:
+            ValueError: if the operation is not part of the model's group.
         '''
         arr = np.asarray(op, dtype=float)
         if arr.ndim == 0:
-            return Permutation(np.arange(self.size_of_unit_cell))
-        return self._pt_perms[self._pt_index(arr)]
-
-    def _pt_index(self, op: np.ndarray) -> int:
-        '''Index of the point-group operation *op* in ``self._pt_perms``.'''
-        for i, other in enumerate(self.point_group_ops):
-            if np.allclose(other, op):
-                return i
-        raise ValueError(f"Operation {np.asarray(op).tolist()} not found in the point group.")
-
-    def set_center_at(self, center: int | np.ndarray):
-        '''
-        Center the lattice at a specific atom index or position.
-        Args:
-            center: The index of the atom (int), or a numpy array position,
-                    to center the lattice around.
-        '''
-        if isinstance(center, int):
-            if not (0 <= center < self.size_of_unit_cell):
-                raise ValueError(f"Center index must be between 0 and {self.size_of_unit_cell-1}.")
-            center_pos, _, _ = self.unit_cell_idx[center]
-        else:
-            center_pos = np.asarray(center)
-
-        self.extended_cell = [(pos - center_pos, s, idx) for pos, s, idx in self.extended_cell]
-        self.unit_cell_idx = [(pos - center_pos, s, idx) for pos, s, idx in self.unit_cell_idx]
-
-    def plot(self, 
-             ax:Optional[plt.Axes]=None,
-             extend:bool = False) -> plt.Axes:
-        '''
-        Plot the lattice structure.
-        Args:
-            ax: A matplotlib Axes object. If None, a new figure and axes will be created.
-            extend: If True, plot the extended cell; otherwise, plot only the unit cell.
-        '''
-        if ax is None:
-            _, ax = plt.subplots(figsize=(6, 6))
-
-        if extend:
-            for pos, _, idx in self.extended_cell:
-                ax.scatter(*pos, color='blue', alpha=0.6)
-                ax.text(*pos, str(idx), fontsize=8, ha='center', va='center')
-
-        for pos, _, idx in self.unit_cell_idx:
-            ax.scatter(*pos, color='red', alpha=0.8)
-            ax.text(*pos, str(idx), fontsize=10, ha='center', va='center', color='white')
-        ax.set_aspect('equal', adjustable='box')
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_title('Lattice Structure')
-        return ax
-
-    def _site_index(self, pos: np.ndarray, s: str) -> int:
-        '''
-        Index of the site of type *s* sitting at *pos*, modulo the supercell lattice.
-
-        The position is reduced modulo ``supercell_vectors`` before the lookup,
-        so a symmetry operation may land on any periodic image of a site.
-
-        Args:
-            pos: Cartesian position of a site, up to a supercell-lattice vector.
-            s: site type.
-
-        Raises:
-            ValueError: if no site of type *s* sits at that position.
-        '''
-        key = (s, self._position_key(pos))
-        if key not in self._site_lookup:
-            raise ValueError(f"No site of type {s!r} at {np.asarray(pos).round(6).tolist()}.")
-        return self._site_lookup[key]
-
-    def _position_key(self, pos: np.ndarray) -> tuple[float, ...]:
-        '''
-        Fractional coordinates of *pos* in the supercell basis, modulo one cell.
-
-        Args:
-            pos: Cartesian position.
-        Returns:
-            The fractional coordinates, each reduced into ``[0, 1)`` and rounded
-            to ``_POS_TOL_DIGITS`` decimals.  Positions that differ by a
-            supercell-lattice vector give the same key.
-        '''
-        frac = np.asarray(pos, dtype=float) @ np.linalg.inv(self.supercell_vectors)
-        frac = frac - np.floor(frac + 1e-9)
-        return tuple(np.round(frac, _POS_TOL_DIGITS))
-
-    def _get_idx(self, pos: np.ndarray, s: str) -> int:
-        '''Backward-compatible alias of :meth:`_site_index`.'''
-        return self._site_index(pos, s)
-
+            return Permutation(np.arange(self.lattice.size_of_unit_cell))
+        for action, perm in zip(self.actions, self.hilbert):
+            if np.allclose(action.rotation, arr):
+                return perm
+        raise ValueError(f"Operation {arr.tolist()} not found in the point group.")
 
 class Coupling:
     '''
