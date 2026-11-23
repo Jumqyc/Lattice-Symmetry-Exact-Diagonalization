@@ -109,30 +109,4 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
  */
 SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors);
 
-/**
- * @param matrix a sparse Hermitian matrix.
- * @param count how many eigenvalues, smallest first.
- * @param iterations Arnoldi dimension; the three-term recurrence needs enough
- *        vectors to resolve a degenerate low-lying spectrum.
- * @param tolerance convergence threshold on the residual.
- * @detail Lanczos with full reorthogonalisation, which is what makes it
- *         stable for clustered spectra at the price of storing ``iterations``
- *         vectors.  The tridiagonal recurrence is kept as its two diagonals: the
- *         Ritz values come from bisection on the inertia count of ``T - x`` and
- *         the residual of a Ritz pair is the last component of its eigenvector
- *         times the first neglected off-diagonal, so no matrix of the size of
- *         the recurrence is formed.  A single-vector recursion resolves
- *         *distinct* eigenvalues only: an exactly degenerate level contributes
- *         one Ritz vector, not one per copy.  Multiplicities therefore have to be
- *         read elsewhere, and the caller must not assume that the returned values
- *         are the k lowest counting multiplicity.  Every returned value is
- *         checked against its residual ``|H x - lambda x|``; the recurrence is
- *         not allowed to hand back an unconverged Ritz value, which is a number
- *         between two true levels and the eigenvalue of nothing.
- * @short Lowest eigenvalues of a sparse Hermitian matrix.
- * @throws std::runtime_error if a requested Ritz value is not converged.
- */
-std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
-                                       int iterations = 200, double tolerance = 1e-10);
-
 }  // namespace ed

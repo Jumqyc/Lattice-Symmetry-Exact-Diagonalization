@@ -4,6 +4,7 @@
 
 #include "hamiltonian.h"
 #include "hilbert.h"
+#include "lanczos.h"
 #include "sector.h"
 
 namespace py = pybind11;
@@ -89,6 +90,8 @@ PYBIND11_MODULE(_edkern, m)
           py::arg("columns"), "The Hamiltonian in a momentum-adapted basis");
     m.def("block_matrix", &ed::block_matrix, py::arg("matrix"), py::arg("vectors"),
           "The block of a sector in a set of adapted vectors, sparse");
-    m.def("lowest_eigenvalues", &ed::lowest_eigenvalues, py::arg("matrix"), py::arg("count"),
+    m.def("lowest_eigenvalues",
+          py::overload_cast<const ed::SparseMatrix&, int, int, double>(&ed::lowest_eigenvalues),
+          py::arg("matrix"), py::arg("count"),
           py::arg("iterations") = 200, py::arg("tolerance") = 1e-10);
 }
