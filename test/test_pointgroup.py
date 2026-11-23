@@ -34,6 +34,7 @@ import numpy as np
 
 twod = importlib.import_module('geometry.2dsym')
 from ed import Coupling, Model
+from hilbert_action import circle_doublet
 from lattice_action import AffineAction, label_action
 from representation import ExplicitPointGroup, TrivialGroup
 
@@ -80,34 +81,37 @@ CASES = [
 # full-space symmetry operators
 # ══════════════════════════════════════════════════════════════════════════════
 
-def state_map_point_group(model: Model, op: np.ndarray):
-    '''Action of a point-group operation on a computational basis state.'''
-    perm = model._op_perm(op)
-    return lambda state: tuple(perm(np.array(state)))
+def action_point_group(model: Model, op: np.ndarray):
+    '''Action of a point-group operation on the computational basis.'''
+    return model._action_for(op)
 
 
-def state_map_translation(model: Model, t):
-    '''Action of a translation on a computational basis state.'''
+def action_translation(model: Model, t):
+    '''Action of a translation on the computational basis.'''
     perm = model._permutation(t, 0)
     return lambda state: tuple(perm(np.array(state)))
 
 
-def state_map_flip(model: Model):
+def action_flip(model: Model):
     '''Action of the spin flip on a computational basis state.'''
     d = model.physical_dim
     return lambda state: tuple(d - 1 - s for s in state)
 
 
-def apply_matrix(model: Model, state_map, states, s2i, v: np.ndarray) -> np.ndarray:
+def apply_operator(model: Model, state_map, states, s2i, v: np.ndarray) -> np.ndarray:
     '''
-    Apply a permutation operator to a dense vector.
+    Apply a symmetry operator to a dense vector.
 
-    ``(U v)[state_map(s)] = v[s]``, which is how a site permutation acts on the
-    computational basis.
+    ``state_map`` is either a function ``state -> state`` or an object with an
+    ``on_state`` method returning ``(state, phase)``.
     '''
     out = np.zeros_like(v)
     for i, state in enumerate(states):
-        out[s2i[state_map(state)]] += v[i]
+        if hasattr(state_map, 'on_state'):
+            image, phase = state_map.on_state(state)
+            out[s2i[image]] += phase * v[i]
+        else:
+            out[s2i[state_map(state)]] += v[i]
     return out
 
 
@@ -219,29 +223,29 @@ def test_sector_labels(tol: float = 1e-8, verbose: bool = True) -> bool:
                 v = np.asarray(sector.basis[:, column].todense()).ravel()
                 # momentum
                 for t in m.tr_group:
-                    overlap = np.vdot(v, apply_matrix(
-                        m, state_map_translation(m, t), states, s2i, v))
+                    overlap = np.vdot(v, apply_operator(
+                        m, action_translation(m, t), states, s2i, v))
                     worst = max(worst, abs(overlap - m.tr_group.character(k, t)))
                 # point group: one-dimensional irreps are diagonal on the sector
                 if alpha is not None:
                     for op in ops:
                         if lg.irrep_dim(alpha) != 1:
                             continue
-                        overlap = np.vdot(v, apply_matrix(
-                            m, state_map_point_group(m, op), states, s2i, v))
+                        overlap = np.vdot(v, apply_operator(
+                            m, action_point_group(m, op), states, s2i, v))
                         worst = max(worst, abs(overlap - lg.character(alpha, op)))
                     if lg.irrep_dim(alpha) > 1:
                         for beta in lg.all_irrps():
                             u = np.zeros_like(v)
                             for op in ops:
-                                u += np.conj(lg.character(beta, op)) * apply_matrix(
-                                    m, state_map_point_group(m, op), states, s2i, v)
+                                u += np.conj(lg.character(beta, op)) * apply_operator(
+                                    m, action_point_group(m, op), states, s2i, v)
                             u *= lg.irrep_dim(beta) / len(ops)
                             worst = max(worst, np.linalg.norm(
                                 u - (v if beta == alpha else 0.0)))
                 # spin flip
-                overlap = np.vdot(v, apply_matrix(
-                    m, state_map_flip(m), states, s2i, v))
+                overlap = np.vdot(v, apply_operator(
+                    m, action_flip(m), states, s2i, v))
                 worst = max(worst, abs(overlap - s))
         good = worst < tol
         ok &= good
@@ -272,7 +276,7 @@ def test_dimensions_from_characters(tol: float = 1e-8, verbose: bool = True) -> 
             traces = {}
             for op in ops:
                 act, phase = m._sector_action(
-                    state_map_point_group(m, op), states, s2i, state2col, B)
+                    action_point_group(m, op), states, s2i, state2col, B)
                 traces[tuple(np.round(op.ravel(), 8))] = float(np.real(np.sum(
                     phase * (act == np.arange(len(act))))))
             for alpha in (['A'] if len(ops) == 1 else lg.all_irrps()):
@@ -375,13 +379,105 @@ def test_multi_site_cells(verbose: bool = True) -> bool:
     model = Model(2, [(np.array([1., 0.]), 4), (np.array([0., 1.]), 1)], cell,
                   point_group=[np.eye(2), glide])
     accepted = (len(model.actions) == 2
-                and np.array_equal((model.hilbert[1] * model.hilbert[1]).perm,
+                and np.array_equal((model.hilbert[1].site * model.hilbert[1].site).perm,
                                    np.arange(model.lattice.size_of_unit_cell)))
     ok &= is_translation and accepted
     if verbose:
         print(f"  {'✓' if is_translation and accepted else 'FAIL'}  glide on a two-site "
               f"cell: glide^2 is the translation {square.translation.tolist()} "
               f"{is_translation}, and the element is accepted {accepted}")
+    return ok
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. orbitals: a non-trivial local action
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_two_orbital_model() -> Model:
+    '''
+    Heisenberg on a 2x2 torus, with two p-like orbitals on every site.
+
+    The local space is ``orbital ⊗ spin`` of dimension four and the orbital
+    pair transforms as a circular doublet ``(x ± iy)``, so a rotation gives a
+    phase and a reflection swaps the pair -- monomial in both cases.  The
+    Hamiltonian is the identity on the orbital factor, hence invariant under
+    ``P ⊗ R``.
+    '''
+    spin = np.eye(2, dtype=complex)
+    pauli = [np.array([[0., 1.], [1., 0.]], dtype=complex),
+             np.array([[0., -1j], [1j, 0.]], dtype=complex),
+             np.array([[1., 0.], [0., -1.]], dtype=complex)]
+    local_ops = [np.kron(spin, p) for p in pauli]
+    model = Model(4, [(A1, 2), (A2, 2)], {('C', 0): np.array([0., 0.])},
+                  point_group=twod.D4(),
+                  orbital_mixing={'C': lambda rot: np.kron(circle_doublet(1)(rot), spin)},
+                  local_charge=(0, 1, 0, 1))
+    for i in range(2):
+        for j in range(2):
+            site = i * 2 + j
+            right = i * 2 + (j + 1) % 2
+            down = ((i + 1) % 2) * 2 + j
+            if site < right:
+                model.add_coupling(Coupling(4, (site, right), (local_ops[0], local_ops[0]),
+                                            (local_ops[1], local_ops[1]),
+                                            (local_ops[2], local_ops[2])))
+            if site < down:
+                model.add_coupling(Coupling(4, (site, down), (local_ops[0], local_ops[0]),
+                                            (local_ops[1], local_ops[1]),
+                                            (local_ops[2], local_ops[2])))
+    return model
+
+
+def test_orbital_mixing(tol: float = 1e-9, verbose: bool = True) -> bool:
+    '''
+    A non-trivial local action: spectra, sector labels and the group law.
+
+    The local action is a phase per orbital, so the only thing that can go
+    wrong is the phase itself -- which is exactly what the sector labels and
+    the group-law check test.
+    '''
+    model = build_two_orbital_model()
+    states, s2i = model._hilbert_space()
+    direct = np.sort(np.linalg.eigvalsh(model._build_H_sym().toarray()))
+    sectors = model.build_sectors()
+    ev = np.sort(np.concatenate(
+        [np.linalg.eigvalsh(sec.hamiltonian.toarray()) for sec in sectors.values()]))
+    dim = sum(sec.dim for sec in sectors.values())
+    spectra = (len(ev) == len(direct) == dim
+               and np.max(np.abs(ev - direct)) < tol)
+
+    # sector labels, with the full action (site permutation times local phase)
+    worst = 0.0
+    for key, sector in sectors.items():
+        k, alpha, _ = key
+        lg, _ = model.little_group(k)
+        for column in range(sector.dim):
+            v = np.asarray(sector.basis[:, column].todense()).ravel()
+            for op in list(lg):
+                if lg.irrep_dim(alpha) != 1:
+                    continue
+                overlap = np.vdot(v, apply_operator(
+                    model, action_point_group(model, op), states, s2i, v))
+                worst = max(worst, abs(overlap - lg.character(alpha, op)))
+    labels = worst < tol
+
+    # group law: U(a) U(b) = U(ab) on the computational basis
+    pairs_ok = True
+    probe = [states[0], states[len(states) // 3], states[-1]]
+    for a, b in zip(model.actions, model.actions):
+        composed = a @ b
+        ua, ub = model._action_for(a.rotation), model._action_for(b.rotation)
+        uab = model._action_for(composed.rotation)
+        for state in probe:
+            after_b, phase_b = ub.on_state(state)
+            twice, phase_a = ua.on_state(after_b)
+            once, phase_once = uab.on_state(state)
+            pairs_ok &= (twice == once and abs(phase_a * phase_b - phase_once) < 1e-10)
+    ok = spectra and labels and pairs_ok
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  two p-like orbitals, D4: {len(sectors)} sectors, "
+              f"Σ dim = {dim}/{len(direct)}, max |ΔE| = {np.max(np.abs(ev - direct)):.1e}, "
+              f"labels {worst:.1e}, group law {pairs_ok}")
     return ok
 
 
@@ -397,7 +493,8 @@ def main():
                      ('sector spectra', test_sector_spectra),
                      ('sector dimensions', test_dimensions_from_characters),
                      ('sector labels', test_sector_labels),
-                     ('multi-site cells', test_multi_site_cells)]:
+                     ('multi-site cells', test_multi_site_cells),
+                     ('orbital mixing', test_orbital_mixing)]:
         print(f'── {name} ──')
         results[name] = fn()
         print()

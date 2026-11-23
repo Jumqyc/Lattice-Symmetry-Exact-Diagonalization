@@ -105,3 +105,121 @@ def from_lattice_action(action, lattice) -> Permutation:
     '''
     image = action.site_map(lattice)
     return Permutation(np.argsort(image))
+
+
+def extract_monomial(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    '''
+    Read a monomial unitary as a local permutation plus a phase per index.
+
+    ``matrix`` is the local action of one group element on the local basis.  It
+    must be a *monomial* unitary -- exactly one non-zero entry per column --
+    because that is what makes it act on a basis state as
+
+        U(g)|σ> = Π_i φ(σ_i) |σ'>,  σ'_i = π(σ_i).
+
+    Args:
+        matrix: ``(d, d)`` unitary acting on the local space.
+    Returns:
+        (perm, phase) with ``perm[i]`` the new local index of basis vector ``i``
+        and ``phase[i]`` the coefficient.
+    Raises:
+        ValueError: if the matrix is not unitary, or not monomial.  A mixing
+            local action would map one basis state onto an exponential
+            superposition, which the computational-basis construction cannot
+            afford; re-expressing the orbitals in a monomial basis (the
+            circular harmonics ``(x ± iy)^m`` for two dimensions) fixes it.
+    '''
+    m = np.asarray(matrix, dtype=complex)
+    if m.shape[0] != m.shape[1]:
+        raise ValueError(f"The local action must be square, got {m.shape}.")
+    if not np.allclose(m @ m.conj().T, np.eye(m.shape[0]), atol=1e-8):
+        raise ValueError("The local action must be unitary.")
+    perm = np.empty(m.shape[0], dtype=int)
+    phase = np.empty(m.shape[0], dtype=complex)
+    for i in range(m.shape[1]):
+        column = m[:, i]
+        nz = np.flatnonzero(np.abs(column) > 1e-8)
+        if len(nz) != 1:
+            raise ValueError(
+                f"The local action is not monomial: column {i} has {len(nz)} non-zero "
+                "entries.  Re-express the orbitals in a monomial basis -- in two "
+                "dimensions the circular harmonics (x ± iy)^m always allow it.")
+        perm[i] = nz[0]
+        phase[i] = column[nz[0]]
+    return perm, phase
+
+
+def circle_doublet(m: int = 1):
+    '''
+    Local action of a pair of circular harmonics ``(x ± iy)^m``.
+
+    A rotation by θ multiplies them by ``exp(±imθ)`` and a reflection maps one
+    onto the other, so both are monomial: the pair never mixes.
+
+    Args:
+        m: the weight of the doublet; 1 for a p pair, 2 for a d pair.
+    Returns:
+        A function ``rotation -> (2, 2) complex matrix``.
+    '''
+    def local_action(rotation: np.ndarray) -> np.ndarray:
+        rot = np.asarray(rotation, dtype=float)
+        if np.linalg.det(rot) > 0:
+            theta = np.arctan2(rot[1, 0], rot[0, 0])
+            return np.diag([np.exp(1j * m * theta), np.exp(-1j * m * theta)])
+        phi = np.arctan2(rot[1, 0], rot[0, 0]) / 2.0
+        return np.array([[0.0, np.exp(-2j * m * phi)],
+                         [np.exp(2j * m * phi), 0.0]], dtype=complex)
+    return local_action
+
+
+class MonomialAction(HilbertAction):
+    '''
+    One symmetry operation on the computational basis: a site permutation plus a
+    monomial local action.
+
+        U(g)|σ> = Π_i φ_{s_i}(σ_i) |σ'>,
+
+    where the species of the source site selects the local permutation and
+    phase, and the site permutation moves the index.
+
+    Attributes:
+        site: the site permutation (preimage convention, see ``Permutation``).
+        species: species of every site, in site-index order.
+        local: species -> ``(perm, phase)`` of the local action.
+    '''
+
+    def __init__(self, site: Permutation, species: list[str],
+                 local: dict[str, tuple[np.ndarray, np.ndarray]]):
+        self.site = site
+        self.species = species
+        self.local = local
+
+    def on_state(self, state: tuple[int, ...]) -> tuple[tuple[int, ...], complex]:
+        '''``U(g)|state> = phase |state'>``.'''
+        source = self.site.perm
+        new = [0] * len(state)
+        phase = 1.0 + 0.0j
+        for i in range(len(state)):
+            src = source[i]
+            value = state[src]
+            action = self.local.get(self.species[src])
+            if action is None:
+                new[i] = value
+            else:
+                new[i] = int(action[0][value])
+                phase *= action[1][value]
+        return tuple(new), phase
+
+    def after_translation(self, translation: Permutation) -> 'MonomialAction':
+        '''
+        Compose a translation in front of this action.
+
+        Translations have a trivial local action, so only the site permutation
+        changes.
+
+        Args:
+            translation: the site permutation of the translation.
+        Returns:
+            The composed action.
+        '''
+        return MonomialAction(translation * self.site, self.species, self.local)

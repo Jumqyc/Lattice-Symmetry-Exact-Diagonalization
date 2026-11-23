@@ -28,8 +28,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 
-from base import LatticeAction, PointGroup
-from hilbert_action import Permutation, from_lattice_action
+from base import HilbertAction, LatticeAction, PointGroup
+from hilbert_action import MonomialAction, Permutation, extract_monomial, from_lattice_action
 from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
 from representation import TrivialGroup
 
@@ -71,7 +71,9 @@ class Model:
                  supercell_info:list[tuple[np.ndarray,int]],
                  cell_info: dict[tuple[str,int], np.ndarray], 
                  point_group: Optional[PointGroup] = None,
-                 MAX_EXTENSION = 1
+                 MAX_EXTENSION = 1,
+                 orbital_mixing: Optional[dict[str, Callable[[np.ndarray], np.ndarray]]] = None,
+                 local_charge: Optional[tuple[int, ...]] = None
                  ):
         '''
         Initialize a lattice model.
@@ -93,6 +95,17 @@ class Model:
                 fractional translation.
             MAX_EXTENSION: half-width of the periodically extended copy kept
                 for plotting.
+            orbital_mixing: per species, the local action of a rotation on that
+                species' orbitals, as a function ``rotation -> (d, d) unitary``.
+                The matrix has to be monomial -- one non-zero per column -- so
+                that an operation still maps one basis state onto one basis
+                state; in two dimensions the circular harmonics ``(x ± iy)^m``
+                (see ``circle_doublet``) always are.  None means every orbital
+                is a scalar and the operation only permutes sites.
+            local_charge: charge of every local basis state, used to select the
+                sector ``sum(charge) == Sztot``; defaults to ``0, 1, ..., d-1``,
+                which is the spin or particle number when the local space is a
+                spin degeneracy.
         Raises:
             ValueError: if the point group contains an operation that is not a
                 symmetry of this finite lattice -- which includes any operation
@@ -101,6 +114,10 @@ class Model:
                 closed.
         '''
         self.physical_dim = phys_dim
+        self.local_charge: tuple[int, ...] = (tuple(range(phys_dim)) if local_charge is None
+                                              else tuple(int(c) for c in local_charge))
+        if len(self.local_charge) != phys_dim:
+            raise ValueError(f"local_charge must have one entry per local state ({phys_dim}).")
         self.lattice = Lattice(supercell_info, cell_info, MAX_EXTENSION)
         self.spatial_dim = self.lattice.spatial_dim
         self.point_group = TrivialGroup() if point_group is None else point_group
@@ -114,28 +131,53 @@ class Model:
                 for pos, s, _ in self.lattice.unit_cell_idx])))
             for i in range(self.spatial_dim)]
 
+        # ── local action: how a rotation acts on every species' orbitals ──
+        self.species: list[str] = [s for _, s, _ in self.lattice.unit_cell_idx]
+        known = set(self.species)
+        if orbital_mixing is not None:
+            unknown = set(orbital_mixing) - known
+            if unknown:
+                raise ValueError(f"orbital_mixing names species that do not occur: {sorted(unknown)}.")
+
         # ── point-group actions: geometry -> permutation of the basis ───
         self.actions: list[AffineAction] = []
-        self.hilbert: list[Permutation] = []
+        self.site_perms: list[Permutation] = []
+        self.local: list[dict[str, tuple[np.ndarray, np.ndarray]]] = []
         for op in self.point_group:
             # an element may be a bare matrix (a rotation about the origin) or
             # a full affine action, which is how a glide or a screw enters
             action = (op if isinstance(op, LatticeAction)
                       else AffineAction.from_matrix(op, self.spatial_dim))
             perm = from_lattice_action(action, self.lattice)   # rejects non-symmetries
-            if tuple(perm.perm) in {tuple(p.perm) for p in self.hilbert}:
+            local = {sp: extract_monomial(mixing(action.rotation))
+                     for sp, mixing in (orbital_mixing or {}).items()}
+            # two operations are the same element only if both the site
+            # permutation and the local action agree: on a small torus a
+            # rotation and a translation can move the sites identically while
+            # acting differently on the orbitals
+            def signature(perm, local):
+                return (tuple(perm.perm),
+                        tuple(sorted((sp, tuple(np.round(p, 8)), tuple(np.round(ph, 8)))
+                                     for sp, (p, ph) in local.items())))
+            if signature(perm, local) in {signature(p, l)
+                                         for p, l in zip(self.site_perms, self.local)}:
                 continue        # duplicated operation
             self.actions.append(action)
-            self.hilbert.append(perm)
+            self.site_perms.append(perm)
+            self.local.append(local)
 
-        # the permutation set must be closed, otherwise it is not a group
-        perms = {tuple(p.perm) for p in self.hilbert}
-        for a in self.hilbert:
-            for b in self.hilbert:
+        self.hilbert: list[MonomialAction] = [
+            MonomialAction(perm, self.species, local)
+            for perm, local in zip(self.site_perms, self.local)]
+
+        # the site permutations must be closed, otherwise this is not a group
+        perms = {tuple(p.perm) for p in self.site_perms}
+        for a in self.site_perms:
+            for b in self.site_perms:
                 if tuple((a * b).perm) not in perms:
                     raise ValueError(
                         f"The supplied point group is not closed: the product of two of its "
-                        f"operations is not in the set ({len(self.hilbert)} distinct "
+                        f"operations is not in the set ({len(self.site_perms)} distinct "
                         f"operations). Complete the group before building the model.")
 
         self.couplings: list[Coupling] = []
@@ -205,7 +247,7 @@ class Model:
         '''
         states = [s for s in product(range(self.physical_dim),
                                      repeat=self.lattice.size_of_unit_cell)
-                  if Sztot is None or sum(s) == Sztot]
+                  if Sztot is None or sum(self.local_charge[i] for i in s) == Sztot]
         return states, {s: i for i, s in enumerate(states)}
 
     def _translation_orbits(self, states: list[tuple[int, ...]]
@@ -263,14 +305,16 @@ class Model:
         # precompute forward permutation for each group element
         for t in self.tr_group:
             for r_idx in range(len(self.hilbert)):
-                perm = self._permutation(t, r_idx)
+                action = self._hilbert_action(t, r_idx)
                 pfwd = np.zeros(n, dtype=int)
+                phases = np.ones(n, dtype=complex)
                 for i, s in enumerate(states):
-                    gs = tuple(perm(np.array(s)))
-                    pfwd[i] = s2i[gs]
-                # U(g) H_raw U(g)^{-1} has matrix element at (pfwd[i], pfwd[j])
+                    image, phases[i] = action.on_state(s)
+                    pfwd[i] = s2i[image]
+                # U(g) H_raw U(g)^{-1} has matrix element at (pfwd[i], pfwd[j]),
+                # with the phases phi_i conj(phi_j)
                 for (i, j), v in raw_acc.items():
-                    sym_acc[(pfwd[i], pfwd[j])] += v
+                    sym_acc[(pfwd[i], pfwd[j])] += phases[i] * np.conj(phases[j]) * v
 
         data, rows, cols = [], [], []
         inv_n = 1.0 / n_g
@@ -305,6 +349,26 @@ class Model:
 
     # ── Permutation composition ───────────────────────────────────────────
 
+    def _hilbert_action(self, t: tuple[int, ...], r_idx: int) -> MonomialAction:
+        '''
+        Action on the computational basis of the element ``(t, r)``.
+
+        Args:
+            t: the translation.
+            r_idx: index of the point-group action in ``self.hilbert``.
+        Returns:
+            The composed monomial action.
+        '''
+        return self.hilbert[r_idx].after_translation(self._translation_perm(t))
+
+    def _translation_perm(self, t: tuple[int, ...]) -> Permutation:
+        '''Site permutation of the translation *t*.'''
+        perm = Permutation(np.arange(self.lattice.size_of_unit_cell))
+        for i, ti in enumerate(t):
+            if ti:
+                perm = perm * (self._elem_tr_perms[i] ** ti)
+        return perm
+
     def _permutation(self, t: tuple[int, ...], r_idx: int) -> Permutation:
         '''Compose  φ(t, r) = φ_tr(t) ∘ φ_pt(r)  on the fly.'''
         n_sites = self.lattice.size_of_unit_cell
@@ -312,7 +376,7 @@ class Model:
         for i, ti in enumerate(t):
             if ti:
                 tr_perm = tr_perm * (self._elem_tr_perms[i] ** ti)
-        return tr_perm * self.hilbert[r_idx]
+        return tr_perm * self.site_perms[r_idx]
 
     # ── Orbit ─────────────────────────────────────────────────────────────
 
@@ -407,7 +471,7 @@ class Model:
                        shape=(len(states), len(reps)), dtype=complex)
         return reps, B, state2col
 
-    def _sector_action(self, state_map: Callable[[tuple[int, ...]], tuple[int, ...]],
+    def _sector_action(self, action: HilbertAction,
                        states: list[tuple[int, ...]],
                        s2i: dict[tuple[int, ...], int],
                        state2col: dict[tuple[int, ...], int],
@@ -415,17 +479,17 @@ class Model:
         '''
         Action of one group element on a momentum sector.
 
-        Every momentum-adapted vector is mapped onto another one times a Bloch
-        phase, ``U(g)|k;x> = φ[x] |k;x'>``: rotating a state that is delocalised
-        over a translation orbit changes which orbit member has to be used as
-        the representative, and that change of representative is a phase
-        ``exp(-i k·t)``.  Dropping it makes the little-group projectors wrong
-        and destroys the sector spectra, so the action is computed as
-        ``B^† U(g) B`` and read off entry by entry.
+        Every momentum-adapted vector is mapped onto another one times a phase,
+        ``U(g)|k;x> = φ[x] |k;x'>``: rotating a state that is delocalised over a
+        translation orbit changes which orbit member has to be used as the
+        representative, and that change of representative is a Bloch phase
+        ``exp(-i k·t)``, on top of whatever phase the local orbitals contribute.
+        Dropping it makes the little-group projectors wrong and destroys the
+        sector spectra, so the action is computed as ``B^† U(g) B`` and read off
+        entry by entry.
 
         Args:
-            state_map: the action of the group element on a computational basis
-                state.
+            action: the action of the group element on the computational basis.
             states: the computational basis.
             s2i: map from a state to its row in *states*.
             state2col: map from a sector state to its column.
@@ -440,16 +504,19 @@ class Model:
         coo = B.tocoo()
         # only the rows that carry the sector basis have to be mapped
         row_of: dict[int, int] = {}
+        phase_of: dict[int, complex] = {}
         for i in np.unique(coo.row):
-            image = state_map(states[i])
+            image, phase = action.on_state(states[i])
             if image not in s2i or image not in state2col:
                 raise ValueError(
                     "The operation maps this momentum sector onto a different one, "
                     "so it is not in the little group of the momentum.")
             row_of[int(i)] = s2i[image]
+            phase_of[int(i)] = phase
 
-        # U(g) B is B with every row moved to the row of its image
-        moved = csr_matrix((coo.data, ([row_of[r] for r in coo.row], coo.col)),
+        # U(g) B is B with every row moved to the row of its image and scaled
+        moved = csr_matrix((coo.data * np.array([phase_of[r] for r in coo.row]),
+                            ([row_of[r] for r in coo.row], coo.col)),
                            shape=B.shape, dtype=complex)
         G = (B.conj().T @ moved).toarray()
 
@@ -529,6 +596,23 @@ class Model:
         eigenvalues, eigenvectors = np.linalg.eigh(projector)
         return eigenvectors[:, eigenvalues > 0.5]
 
+    def _spin_flip_action(self) -> MonomialAction:
+        '''
+        The spin flip on the computational basis: ``σ_i -> d-1-σ_i`` on every site.
+
+        It is a local action only -- the sites do not move -- so it is the same
+        monomial action for every species.
+
+        Returns:
+            The monomial action of the spin flip.
+        '''
+        local = {sp: (np.array([self.physical_dim - 1 - i
+                                for i in range(self.physical_dim)]),
+                      np.ones(self.physical_dim, dtype=complex))
+                 for sp in set(self.species)}
+        return MonomialAction(Permutation(np.arange(self.lattice.size_of_unit_cell)),
+                              self.species, local)
+
     def build_sectors(self, Sztot: Optional[int] = None,
                       spin_flip: bool = False
                       ) -> dict[SectorKey, Sector]:
@@ -557,7 +641,6 @@ class Model:
                 "Sztot is self-conjugate.")
         states, s2i = self._hilbert_space(Sztot)
         H_sym = self._build_H_sym(Sztot)
-        flip = (lambda state: tuple(self.physical_dim - 1 - s for s in state))
         sectors: dict[SectorKey, Sector] = {}
         for k in self.tr_group.all_momenta():
             reps, B, state2col = self._momentum_basis(k, states, s2i)
@@ -566,14 +649,11 @@ class Model:
             H_k = (B.conj().T @ (H_sym @ B)).toarray()
             lg, _ = self.little_group(k)
             ops = list(lg)
-            fact = (self._sector_action(flip, states, s2i, state2col, B)
+            fact = (self._sector_action(self._spin_flip_action(), states, s2i, state2col, B)
                     if spin_flip else None)
             # the trivial little group has a single sector, nothing to project
             actions = [] if len(ops) == 1 else [
-                self._sector_action(
-                    (lambda state, perm=self._op_perm(op):
-                     tuple(perm(np.array(state)))),
-                    states, s2i, state2col, B)
+                self._sector_action(self._action_for(op), states, s2i, state2col, B)
                 for op in ops]
             irreps = ['A'] if len(ops) == 1 else lg.all_irrps()
             for alpha in irreps:
@@ -601,26 +681,27 @@ class Model:
                         hamiltonian=csr_matrix(R.conj().T @ (H_a @ R)))
         return sectors
 
-    def _op_perm(self, op: np.ndarray) -> Permutation:
+    def _action_for(self, op: np.ndarray) -> MonomialAction:
         '''
-        Site permutation of a point-group operation.
+        Action on the computational basis of a point-group operation.
 
         The trivial group is represented by a scalar, which stands for the
-        identity permutation.
+        identity.
 
         Args:
             op: an operation of ``self.point_group``.
         Returns:
-            The corresponding site permutation.
+            The corresponding monomial action.
         Raises:
             ValueError: if the operation is not part of the model's group.
         '''
         arr = np.asarray(op, dtype=float)
         if arr.ndim == 0:
-            return Permutation(np.arange(self.lattice.size_of_unit_cell))
-        for action, perm in zip(self.actions, self.hilbert):
+            return MonomialAction(Permutation(np.arange(self.lattice.size_of_unit_cell)),
+                                  self.species, {})
+        for action, hilbert in zip(self.actions, self.hilbert):
             if np.allclose(action.rotation, arr):
-                return perm
+                return hilbert
         raise ValueError(f"Operation {arr.tolist()} not found in the point group.")
 
 class Coupling:
