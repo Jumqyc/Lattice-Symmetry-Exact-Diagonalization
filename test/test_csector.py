@@ -168,6 +168,43 @@ def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> b
     return ok
 
 
+def test_symmetrise(model: Model, Sztot, label: str, tol: float = 1e-12,
+                    verbose: bool = True) -> bool:
+    '''
+    The averaging path of ``symmetrise``, which the invariant models never reach.
+
+    A Hamiltonian built from a single bond is not invariant, so the fast path
+    rejects it and the average over the group is taken.  What comes out has to be
+    invariant, and it has to be the average ``(1/|G|) sum_g U(g) H U(g)^T`` that
+    the test forms densely from the group actions.
+    '''
+    basis = cxx_basis(model, Sztot)
+    couplings = cxx_couplings(model)
+    actions = cxx_group_actions(model)
+    one_term = _edkern.assemble(basis, couplings[:1])
+    averaged = _edkern.symmetrise(one_term, basis, actions)
+    # symmetrising the result again must change nothing
+    again = _edkern.symmetrise(averaged, basis, actions)
+    idempotent = abs(to_scipy(again) - to_scipy(averaged)).max() if averaged.nonzeros() else 0.0
+
+    n = basis.size()
+    dense = to_scipy(one_term).toarray()
+    total = np.zeros((n, n), dtype=complex)
+    for action in actions:
+        permutation = np.zeros((n, n), dtype=complex)
+        for i in range(n):
+            moved, phase = _edkern.apply(basis, action, basis.state(i))
+            permutation[basis.index(moved), i] = phase
+        total += permutation @ dense @ permutation.conj().T
+    total /= len(actions)
+    difference = float(np.max(np.abs(to_scipy(averaged).toarray() - total))) if n else 0.0
+    ok = idempotent < tol and difference < 1e-10
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  {label} symmetrise: averaging a one-bond term, "
+              f"idempotent {idempotent:.1e}, matches the dense average {difference:.1e}")
+    return ok
+
+
 def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
                        verbose: bool = True) -> bool:
     '''Block matrices, their dimensions and the union of their spectra.'''
@@ -284,6 +321,7 @@ def main():
         model = builder()
         print(f'── {label} ──')
         test_hamiltonian(model, sztot, label)
+        test_symmetrise(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
         print()

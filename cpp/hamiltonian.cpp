@@ -95,17 +95,21 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
     if (matrix.rows != n || matrix.cols != n)
         throw std::invalid_argument("the matrix does not match the basis");
 
-    // the image of every state under every element, and the phase it carries
-    std::vector<std::vector<int>> image(groups, std::vector<int>(n));
-    std::vector<std::vector<Complex>> phase(groups, std::vector<Complex>(n));
-    for (int g = 0; g < groups; ++g)
+    // Both paths below work one group element at a time, so the image and the
+    // phase of every state are rebuilt per element into two buffers instead of
+    // being stored for all of them: the number of `apply` calls is the same, and
+    // the memory is O(basis) instead of O(|G| * basis).
+    std::vector<int> image(static_cast<std::size_t>(n));
+    std::vector<Complex> phase(static_cast<std::size_t>(n));
+    const auto map_element = [&](int g, bool with_phase) {
         for (int i = 0; i < n; ++i) {
             const auto moved = apply(basis, actions[g], basis.state(i));
-            image[g][i] = basis.index(moved.first);
-            phase[g][i] = moved.second;
-            if (image[g][i] < 0)
+            image[i] = basis.index(moved.first);
+            if (image[i] < 0)
                 throw std::runtime_error("a group element left the basis; the symmetry is inconsistent");
+            if (with_phase) phase[i] = moved.second;
         }
+    };
 
     // fast path: H is already invariant, which is the case whenever the
     // couplings respect the symmetry; averaging it would return it anyway.
@@ -117,8 +121,9 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
     std::vector<int> stamp(static_cast<std::size_t>(n), -1);
     int colour = 0;
     for (int g = 0; g < groups && invariant; ++g) {
+        map_element(g, false);
         for (int i = 0; i < n && invariant; ++i) {
-            const int source = image[g][i];
+            const int source = image[i];
             const auto begin = matrix.indptr[i], end = matrix.indptr[i + 1];
             const auto from = matrix.indptr[source], stop = matrix.indptr[source + 1];
             if (end - begin != stop - from) {
@@ -129,7 +134,7 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
             for (int b = from; b < stop; ++b) stamp[matrix.indices[b]] = colour;
             for (int a = begin; a < end; ++a) {
                 // the image of the entry (i, column) sits at (image[i], image[column])
-                if (stamp[image[g][matrix.indices[a]]] != colour) {
+                if (stamp[image[matrix.indices[a]]] != colour) {
                     invariant = false;
                     break;
                 }
@@ -140,33 +145,34 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
 
     // general path: accumulate (1/|G|) sum_g U(g) H U(g)^-1
     std::map<std::pair<int, int>, Complex> accumulated;
-    for (int g = 0; g < groups; ++g)
+    for (int g = 0; g < groups; ++g) {
+        map_element(g, true);
         for (int i = 0; i < n; ++i) {
-            const Complex ratio = phase[g][i];
+            const Complex ratio = phase[i];
             for (int a = matrix.indptr[i]; a < matrix.indptr[i + 1]; ++a) {
                 const int j = matrix.indices[a];
-                const Complex weight = ratio * std::conj(phase[g][j]) * matrix.data[a];
-                accumulated[{image[g][i], image[g][j]}] += weight;
+                const Complex weight = ratio * std::conj(phase[j]) * matrix.data[a];
+                accumulated[{image[i], image[j]}] += weight;
             }
         }
+    }
 
+    // the map is ordered by (row, column), so the CSR form follows from one walk
+    // over it; looking every pair of states up in turn would be quadratic in the
+    // size of the basis
     SparseMatrix out;
     out.rows = n;
     out.cols = n;
-    out.indptr.assign(n + 1, 0);
-    out.indptr[0] = 0;
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
-            const auto it = accumulated.find({i, j});
-            if (it == accumulated.end()) continue;
-            const Complex value = it->second / static_cast<double>(groups);
-            if (std::abs(value) > 1e-14) {
-                out.indices.push_back(j);
-                out.data.push_back(value);
-            }
-        }
-        out.indptr[i + 1] = static_cast<int>(out.indices.size());
+    out.indptr.assign(static_cast<std::size_t>(n) + 1, 0);
+    int row = 0;
+    for (const auto& entry : accumulated) {
+        while (row < entry.first.first) out.indptr[++row] = static_cast<int>(out.indices.size());
+        const Complex value = entry.second / static_cast<double>(groups);
+        if (std::abs(value) < 1e-14) continue;
+        out.indices.push_back(entry.first.second);
+        out.data.push_back(value);
     }
+    while (row < n) out.indptr[++row] = static_cast<int>(out.indices.size());
     return out;
 }
 
