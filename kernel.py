@@ -316,8 +316,13 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
                     continue
                 block = _edkern.block_matrix(sector, vectors, threads)
                 asked = min(count, vectors.vectors())
+                # a degenerate level needs one vector per copy, and the recurrence
+                # resolves the copies one cycle at a time, so the budget has to
+                # grow with what is asked for; a fixed two hundred steps converges
+                # the ground state and stalls on the fourth copy of it
+                budget = max(200, 40 * asked)
                 out[(k, alpha, s)] = np.asarray(
-                    _edkern.lowest_eigenvalues(block, asked))
+                    _edkern.lowest_eigenvalues(block, asked, budget))
     return out
 
 

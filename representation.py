@@ -99,8 +99,11 @@ class TrivialGroup(PointGroup):
     The only irrep of this group is 'A', which has a character of 1 for the identity operation.
     '''
     def __init__(self):
-        self._shape: tuple[int, ...] = ()
-        self._operations: tuple[tuple[int | float, ...], ...] = ((1,),)
+        # the identity is the 2x2 identity: every operation of this package acts on
+        # the plane, and the little-group machinery composes and multiplies them,
+        # which a bare scalar cannot take part in
+        self._shape: tuple[int, ...] = (2, 2)
+        self._operations: tuple[tuple[int | float, ...], ...] = ((1, 0, 0, 1),)
 
     def __hash__(self):
         return hash((self._shape, self._operations))
