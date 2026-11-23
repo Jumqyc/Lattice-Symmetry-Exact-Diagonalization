@@ -209,4 +209,25 @@ std::vector<Complex> sector_apply_block(const Basis& basis,
                                         const SectorVectors& vectors,
                                         const std::vector<Complex>& vector, int threads = 0);
 
+/**
+ * @param basis the computational basis.
+ * @param couplings the terms of the Hamiltonian.
+ * @param sector the orbit labels of the momentum sector.
+ * @param characters the character of the momentum at every translation.
+ * @param vectors the adapted vectors of one irreducible sector.
+ * @param threads how many workers to use; 0 means one per hardware thread.
+ * @detail The block written down once, ``V^T B^T H B V``, with the momentum
+ *         Hamiltonian never formed: the adapted vectors are expanded into states
+ *         (the only large object is that listing), the Hamiltonian is applied to
+ *         each column, and every image is scattered through the same listing.  The
+ *         price against building ``B^T H B`` first is ``|G_k|`` times the term
+ *         applications -- the adapted vectors are delocalised over the little
+ *         group -- and the saving is the sector Hamiltonian itself, which is the
+ *         object that does not fit once the lattice gets large.
+ * @short The block of one sector, built without the sector Hamiltonian.
+ */
+SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& couplings,
+                          const SectorMap& sector, const std::vector<Complex>& characters,
+                          const SectorVectors& vectors, int threads = 0);
+
 }  // namespace ed

@@ -116,6 +116,11 @@ PYBIND11_MODULE(_edkern, m)
           py::arg("tolerance") = 1e-10, py::arg("threads") = 0,
           "Lowest eigenvalues of an operator given as a product");
 
+    m.def("sector_block", &ed::sector_block,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
+          py::arg("couplings"), py::arg("sector"), py::arg("characters"),
+          py::arg("vectors"), py::arg("threads") = 0,
+          "The block of one sector, built without the sector Hamiltonian");
     m.def("block_matrix", &ed::block_matrix,
           py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
           py::arg("threads") = 0,
