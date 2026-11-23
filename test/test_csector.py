@@ -42,14 +42,20 @@ def heisenberg(N, point_group, a1=A1, a2=A2) -> Model:
     '''Nearest-neighbour Heisenberg model on an N x N torus.'''
     model = Model(2, [(a1, N), (a2, N)], {('A', 0): np.array([0., 0.])},
                   point_group=point_group)
+    # the third nearest-neighbour direction of a triangular lattice is a1 - a2;
+    # the 60-degree rotation maps an a1 bond onto it, so leaving it out makes the
+    # model invariant under nothing but translations
+    directions = [(0, 1), (1, 0)]
+    if np.allclose(np.linalg.norm(np.asarray(a1) - np.asarray(a2)), np.linalg.norm(a1)):
+        directions.append((1, -1))
     for i in range(N):
         for j in range(N):
             site = i * N + j
-            right = i * N + (j + 1) % N
-            down = ((i + 1) % N) * N + j
-            # each unordered bond is visited once: the wrap bond is j = N - 1
-            model.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
-            model.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
+            # each unordered bond is visited once per direction: the wrap bond is
+            # the instance j = N - 1
+            for di, dj in directions:
+                partner = ((i + di) % N) * N + (j + dj) % N
+                model.add_coupling(Coupling(2, (site, partner), (X, X), (Y, Y), (Z, Z)))
     return model
 
 
@@ -143,17 +149,21 @@ def to_scipy(matrix) -> csr_matrix:
 # ── the checks ────────────────────────────────────────────────────────────────
 
 def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
-    '''The assembled Hamiltonian equals the Python one.'''
+    '''The assembled Hamiltonian equals the Python one, and respects the group.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
     actions = cxx_group_actions(model)
-    kernel = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis, actions)
+    raw = _edkern.assemble(basis, couplings)
+    kernel = _edkern.symmetrise(raw, basis, actions)
     reference = model._build_H_sym(Sztot)
     difference = abs(to_scipy(kernel) - reference).max() if kernel.nonzeros() else 0.0
-    ok = difference < 1e-12
+    # the couplings are supposed to respect the group, so averaging must be a
+    # no-op; if it is not, the fixture is not the model its label claims
+    drift = abs(to_scipy(kernel) - to_scipy(raw)).max() if raw.nonzeros() else 0.0
+    ok = difference < 1e-12 and drift < 1e-12
     if verbose:
         print(f"  {'✓' if ok else 'FAIL'}  {label} H: {kernel.nonzeros()} non-zeros, "
-              f"max difference {difference:.1e}")
+              f"max difference {difference:.1e}, symmetrisation drift {drift:.1e}")
     return ok
 
 

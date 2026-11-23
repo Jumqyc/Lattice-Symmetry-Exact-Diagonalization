@@ -51,15 +51,18 @@ def heisenberg(N, point_group, a1=A1, a2=A2, orbital_mixing=None, local_charge=N
     # model commutes with the site permutation times the orbital rotation
     local_ops = ((X, Y, Z) if orbital_mixing is None
                  else tuple(np.kron(np.eye(2, dtype=complex), M) for M in (X, Y, Z)))
+    # a1 - a2 closes the triangular lattice's third neighbour direction
+    directions = [(0, 1), (1, 0)]
+    if np.allclose(np.linalg.norm(np.asarray(a1) - np.asarray(a2)), np.linalg.norm(a1)):
+        directions.append((1, -1))
     for i in range(N):
         for j in range(N):
             site = i * N + j
-            right = i * N + (j + 1) % N
-            down = ((i + 1) % N) * N + j
-            # each unordered bond is visited once: the wrap bond is j = N - 1
-            bonds = [(site, right), (site, down)]
-            for a, b in bonds:
-                model.add_coupling(Coupling(dim, (a, b),
+            # each unordered bond is visited once per direction: the wrap bond is
+            # the instance j = N - 1
+            for di, dj in directions:
+                partner = ((i + di) % N) * N + (j + dj) % N
+                model.add_coupling(Coupling(dim, (site, partner),
                                             (local_ops[0], local_ops[0]),
                                             (local_ops[1], local_ops[1]),
                                             (local_ops[2], local_ops[2])))

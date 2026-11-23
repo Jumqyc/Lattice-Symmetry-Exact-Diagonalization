@@ -56,14 +56,18 @@ def heisenberg(N1, N2, point_group, a1=A1, a2=A2) -> Model:
     '''Nearest-neighbour Heisenberg model on an N1 x N2 torus.'''
     m = Model(2, [(a1, N1), (a2, N2)], {('A', 0): np.array([0., 0.])},
               point_group=point_group)
+    # a1 - a2 is a nearest-neighbour direction on the triangular lattice, and the
+    # 60-degree rotation maps an a1 bond onto it
+    directions = [(0, 1), (1, 0)]
+    if np.allclose(np.linalg.norm(np.asarray(a1) - np.asarray(a2)), np.linalg.norm(a1)):
+        directions.append((1, -1))
     for i in range(N1):
         for j in range(N2):
             site = i * N2 + j
-            right = i * N2 + (j + 1) % N2
-            down = ((i + 1) % N1) * N2 + j
             # the wrap bond is the instance j = N2 - 1 (i = N1 - 1)
-            m.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
-            m.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
+            for di, dj in directions:
+                partner = ((i + di) % N1) * N2 + (j + dj) % N2
+                m.add_coupling(Coupling(2, (site, partner), (X, X), (Y, Y), (Z, Z)))
     return m
 
 
