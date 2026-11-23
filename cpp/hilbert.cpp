@@ -171,7 +171,7 @@ SparseColumns momentum_basis(const Basis& basis,
         const double norm = std::sqrt(norm2);
         if (!(norm > 1e-12)) continue;      // momentum incompatible with the stabiliser
 
-        out.reps.push_back(basis.index(rep));
+        ++out.column_count;
         for (const auto& entry : accumulated) {
             out.indices.push_back(basis.index(entry.first));
             out.data.push_back(entry.second / norm);

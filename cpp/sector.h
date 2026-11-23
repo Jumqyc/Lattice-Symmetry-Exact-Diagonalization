@@ -51,7 +51,6 @@ struct SectorVectors {
     std::vector<int> start;            // size = #vectors + 1, into the entries
     std::vector<int> columns;          // sector column of every entry
     std::vector<Complex> data;         // coefficient of every entry
-    std::vector<int> orbit_of_vector;  // orbit that each vector was built on
 
     int vectors() const { return static_cast<int>(start.size()) - 1; }
 };

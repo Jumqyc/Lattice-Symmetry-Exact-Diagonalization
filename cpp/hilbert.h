@@ -108,12 +108,12 @@ std::pair<std::uint64_t, Complex> apply(const Basis& basis, const MonomialAction
  * @short A set of sparse columns over the computational basis.
  */
 struct SparseColumns {
-    std::vector<int> reps;          // basis index of each column's representative
+    int column_count = 0;           // how many columns the sector has
     std::vector<int> indptr;        // size = columns + 1
     std::vector<int> indices;       // basis index of each entry
     std::vector<Complex> data;      // coefficient of each entry
 
-    int columns() const { return static_cast<int>(reps.size()); }
+    int columns() const { return column_count; }
 };
 
 /**

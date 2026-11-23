@@ -291,7 +291,6 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
             for (const auto& entry : vector) out.columns.push_back(orbit[entry.first]);
             for (const auto& entry : vector) out.data.push_back(entry.second);
             out.start.push_back(static_cast<int>(out.columns.size()));
-            out.orbit_of_vector.push_back(index);
         }
     }
     return out;
@@ -303,11 +302,9 @@ SectorVectors identity_vectors(int column_count)
     out.start.resize(static_cast<std::size_t>(column_count) + 1);
     out.columns.resize(column_count);
     out.data.assign(column_count, Complex{1.0, 0.0});
-    out.orbit_of_vector.resize(column_count);
     for (int c = 0; c < column_count; ++c) {
         out.start[c] = c;
         out.columns[c] = c;
-        out.orbit_of_vector[c] = c;
     }
     out.start[column_count] = column_count;
     return out;

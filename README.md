@@ -46,8 +46,8 @@ couplings: dense matrices live there and nowhere else.
 
 `cpp/build.py` compiles `cpp/*.cpp` into `_edkern<ext>` in the repository root;
 that file is a build artefact and is not committed.  It needs a C++17 compiler
-and the Eigen headers (`/usr/include/eigen3`, or set `EIGEN_INCLUDE`).  Add
-`--native` to build with `-march=native`.
+and nothing else: the kernel's linear algebra is sparse, and the one dense solve
+it does not do.  Add `--native` to build with `-march=native`.
 
 ## Tests
 

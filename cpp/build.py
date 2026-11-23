@@ -5,8 +5,8 @@ The module is written next to the Python sources as ``_edkern<ext>`` so that
 ``import _edkern`` works from the repository root, and it is *not* committed: a
 clone builds it with ``python cpp/build.py``.
 
-Requires ``pybind11`` (headers only) and Eigen (``/usr/include/eigen3`` on
-Debian-like systems).  No BLAS or LAPACK development files are needed.
+Requires ``pybind11`` (headers only).  The kernel has no other dependency: the
+linear algebra it needs is sparse, and the dense solves it does not do.
 '''
 
 import os
@@ -49,7 +49,6 @@ def main(extra_flags=()) -> None:
         # third-party headers are system headers: their own warnings are noise
         f'-isystem{pybind11.get_include()}',
         f'-isystem{sysconfig.get_paths()["include"]}',
-        f'-isystem{os.environ.get("EIGEN_INCLUDE", "/usr/include/eigen3")}',
         *extra_flags,
         *sources,
     ]
