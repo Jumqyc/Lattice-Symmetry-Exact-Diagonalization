@@ -1,9 +1,12 @@
 '''
-Test _build_H on a 3×3 Heisenberg model against direct diagonalization.
+Momentum sectors of a 3x3 Heisenberg model against direct diagonalization.
 
-Implements in order: Step 1 (momentum), Step 3 (spin-flip), Step 2 (little group).
-After each step we compare the union of all sector eigenvalues with the
-eigenvalues from a direct (full-Hilbert-space) sparse diagonalization.
+``Model._build_H`` builds the Hamiltonian in the momentum-adapted basis of every
+translation sector; the union of the sector spectra has to reproduce the spectrum
+of the full 512-state space.
+
+The little-group projection and the spin-flip parity are not exercised here: they
+are covered by ``test_pointgroup.py``.
 '''
 
 import sys, os
