@@ -229,11 +229,18 @@ def test_lanczos(model: Model, Sztot, label: str, tol: float = 1e-8,
     count = min(4, len(distinct))
     found = np.sort(np.asarray(_edkern.lowest_eigenvalues(sector_hamiltonian, count)))
     difference = float(np.max(np.abs(found - distinct[:count]))) if count else 0.0
-    ok = difference < tol
+    # a recurrence cut off after two steps cannot have converged: it has to
+    # refuse rather than hand back a number between two levels
+    refused = False
+    try:
+        _edkern.lowest_eigenvalues(sector_hamiltonian, count, 2)
+    except RuntimeError:
+        refused = True
+    ok = difference < tol and refused
     if verbose:
         print(f"  {'✓' if ok else 'FAIL'}  {label} Lanczos: {count} lowest distinct levels "
               f"of a {sector_hamiltonian.rows}-dimensional sector, max difference "
-              f"{difference:.1e}")
+              f"{difference:.1e}, unconverged run refused {refused}")
     return ok
 
 

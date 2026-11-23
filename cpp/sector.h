@@ -114,8 +114,12 @@ std::vector<double> eigenvalues(const std::vector<Complex>& block, int size);
  *         one per copy.  Multiplicities therefore have to be read elsewhere --
  *         from the dense solver for a block that fits, or from the character
  *         trace formula -- and the caller must not assume that the returned
- *         values are the k lowest counting multiplicity.
+ *         values are the k lowest counting multiplicity.  Every returned value
+ *         is checked against its residual ``|H x - lambda x|``; the recurrence
+ *         is not allowed to hand back an unconverged Ritz value, which is a
+ *         number between two true levels and the eigenvalue of nothing.
  * @short Lowest eigenvalues of a sparse Hermitian matrix.
+ * @throws std::runtime_error if a requested Ritz value is not converged.
  */
 std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
                                        int iterations = 200, double tolerance = 1e-10);

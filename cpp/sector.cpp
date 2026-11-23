@@ -288,8 +288,28 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
 
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(tridiagonal.topLeftCorner(steps, steps));
     const Eigen::VectorXd values = solver.eigenvalues();
+    const Eigen::MatrixXd rotations = solver.eigenvectors();
     std::vector<double> out(std::min<int>(count, static_cast<int>(values.size())));
     for (int i = 0; i < static_cast<int>(out.size()); ++i) out[i] = values[i];
+
+    // A Ritz value is only an eigenvalue once its residual is small; the tail of
+    // an unconverged recurrence produces numbers that lie between true levels
+    // and are eigenvalues of nothing.  The test costs one matrix-vector product
+    // per requested value.
+    for (int i = 0; i < static_cast<int>(out.size()); ++i) {
+        std::vector<Complex> ritz(static_cast<std::size_t>(n), Complex{0.0, 0.0});
+        for (int step = 0; step < steps; ++step) {
+            const double coefficient = rotations(step, i);
+            if (coefficient == 0.0) continue;
+            for (int k = 0; k < n; ++k) ritz[k] += coefficient * basis[step][k];
+        }
+        const std::vector<Complex> image = multiply(matrix, ritz);
+        double residual = 0.0;
+        for (int k = 0; k < n; ++k) residual += std::norm(image[k] - out[i] * ritz[k]);
+        if (std::sqrt(residual) > tolerance * std::max(1.0, std::abs(out[i])))
+            throw std::runtime_error(
+                "Lanczos did not converge: raise the number of iterations");
+    }
     return out;
 }
 
