@@ -14,7 +14,7 @@ from typing import Optional
 import importlib
 
 twod = importlib.import_module('geometry.2dsym')
-from base import Model, Coupling
+from ed import Coupling, Model
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Pauli matrices

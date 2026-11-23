@@ -33,7 +33,9 @@ from itertools import product
 import numpy as np
 
 twod = importlib.import_module('geometry.2dsym')
-from base import Coupling, ExplicitPointGroup, Model, TrivialGroup
+from ed import Coupling, Model
+from lattice_action import label_action
+from representation import ExplicitPointGroup, TrivialGroup
 
 X = np.array([[0., 1.], [1., 0.]], dtype=complex)
 Y = np.array([[0., -1j], [1j, 0.]], dtype=complex)
@@ -121,7 +123,7 @@ def test_little_groups(verbose: bool = True) -> bool:
         ops = list(pg)
         bad = []
         for k in m.tr_group.all_momenta():
-            star = {tuple((pg.label_action(op, m.supercell_vectors).T @ np.array(k))
+            star = {tuple((label_action(op, m.supercell_vectors).T @ np.array(k))
                           % m.Nvec) for op in ops}
             lg, reps = m.little_group(k)
             if len(star) * len(list(lg)) != len(ops):

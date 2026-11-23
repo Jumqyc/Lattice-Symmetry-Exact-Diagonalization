@@ -28,7 +28,8 @@ import importlib
 import numpy as np
 
 twod = importlib.import_module('geometry.2dsym')
-from base import Model
+from ed import Model
+from lattice_action import label_action
 
 A1 = np.array([1., 0.])
 A2 = np.array([0., 1.])
@@ -44,7 +45,7 @@ def build(N1, N2, point_group, a1=A1, a2=A2) -> Model:
 
 def star(model: Model, k: tuple[int, ...]) -> set[tuple[int, ...]]:
     '''Momenta equivalent to *k* under the point group.'''
-    return {tuple((model.point_group.label_action(op, model.supercell_vectors).T
+    return {tuple((label_action(op, model.supercell_vectors).T
                    @ np.array(k)) % model.Nvec)
             for op in model.point_group}
 
