@@ -61,10 +61,9 @@ def heisenberg(N1, N2, point_group, a1=A1, a2=A2) -> Model:
             site = i * N2 + j
             right = i * N2 + (j + 1) % N2
             down = ((i + 1) % N1) * N2 + j
-            if site < right:
-                m.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
-            if site < down:
-                m.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
+            # the wrap bond is the instance j = N2 - 1 (i = N1 - 1)
+            m.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
+            m.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
     return m
 
 
@@ -417,14 +416,14 @@ def build_two_orbital_model() -> Model:
             site = i * 2 + j
             right = i * 2 + (j + 1) % 2
             down = ((i + 1) % 2) * 2 + j
-            if site < right:
-                model.add_coupling(Coupling(4, (site, right), (local_ops[0], local_ops[0]),
-                                            (local_ops[1], local_ops[1]),
-                                            (local_ops[2], local_ops[2])))
-            if site < down:
-                model.add_coupling(Coupling(4, (site, down), (local_ops[0], local_ops[0]),
-                                            (local_ops[1], local_ops[1]),
-                                            (local_ops[2], local_ops[2])))
+            # a two-site ring has one bond per direction, so the same bond
+            # enters twice -- the model stays translation invariant
+            model.add_coupling(Coupling(4, (site, right), (local_ops[0], local_ops[0]),
+                                        (local_ops[1], local_ops[1]),
+                                        (local_ops[2], local_ops[2])))
+            model.add_coupling(Coupling(4, (site, down), (local_ops[0], local_ops[0]),
+                                        (local_ops[1], local_ops[1]),
+                                        (local_ops[2], local_ops[2])))
     return model
 
 

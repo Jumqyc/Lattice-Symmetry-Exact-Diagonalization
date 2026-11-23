@@ -36,16 +36,16 @@ def build_heisenberg_model() -> Model:
         cell_info={('A', 0): np.array([0., 0.])},
         point_group=twod.C2(),
     )
-    # Heisenberg bonds: horizontal and vertical neighbours with PBC wrap
+    # Heisenberg bonds: horizontal and vertical neighbours with PBC wrap.  The
+    # loop visits each unordered bond once; the wrap bond (i, 2)-(i, 0) is the
+    # instance j = 2, not a second copy of j = 0.
     for i in range(3):
         for j in range(3):
             site = i * 3 + j
             right = i * 3 + (j + 1) % 3
             down  = ((i + 1) % 3) * 3 + j
-            if site < right:
-                m.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
-            if site < down:
-                m.add_coupling(Coupling(2, (site, down),  (X, X), (Y, Y), (Z, Z)))
+            m.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
+            m.add_coupling(Coupling(2, (site, down),  (X, X), (Y, Y), (Z, Z)))
     return m
 
 

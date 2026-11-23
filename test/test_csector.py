@@ -47,10 +47,9 @@ def heisenberg(N, point_group, a1=A1, a2=A2) -> Model:
             site = i * N + j
             right = i * N + (j + 1) % N
             down = ((i + 1) % N) * N + j
-            if site < right:
-                model.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
-            if site < down:
-                model.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
+            # each unordered bond is visited once: the wrap bond is j = N - 1
+            model.add_coupling(Coupling(2, (site, right), (X, X), (Y, Y), (Z, Z)))
+            model.add_coupling(Coupling(2, (site, down), (X, X), (Y, Y), (Z, Z)))
     return model
 
 

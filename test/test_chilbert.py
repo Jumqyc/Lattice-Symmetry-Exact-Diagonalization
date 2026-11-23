@@ -56,11 +56,8 @@ def heisenberg(N, point_group, a1=A1, a2=A2, orbital_mixing=None, local_charge=N
             site = i * N + j
             right = i * N + (j + 1) % N
             down = ((i + 1) % N) * N + j
-            bonds = []
-            if site < right:
-                bonds.append((site, right))
-            if site < down:
-                bonds.append((site, down))
+            # each unordered bond is visited once: the wrap bond is j = N - 1
+            bonds = [(site, right), (site, down)]
             for a, b in bonds:
                 model.add_coupling(Coupling(dim, (a, b),
                                             (local_ops[0], local_ops[0]),
