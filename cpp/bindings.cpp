@@ -96,6 +96,8 @@ PYBIND11_MODULE(_edkern, m)
 
     m.def("sector_map", &ed::sector_map, py::arg("basis"), py::arg("translations"),
           "Translated orbit labels of one momentum sector");
+    m.def("sector_subset", &ed::sector_subset, py::arg("sector"), py::arg("characters"),
+          "The same labels restricted to one momentum");
     m.def("sector_apply", &ed::sector_apply,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("sector"), py::arg("characters"),

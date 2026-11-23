@@ -382,6 +382,25 @@ class Model:
         return kernel.spectra(self, count=count, sztot=Sztot, spin_flip=spin_flip,
                               threads=threads)
 
+    def spectra_free(self, Sztot: Optional[int] = None, count: int = 5,
+                     threads: int = 0) -> dict[tuple[int, ...], NDArray[np.float64]]:
+        '''
+        Lowest levels of every momentum, without ever forming a matrix.
+
+        Args:
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            count: how many levels per momentum.
+            threads: workers for the product; 0 means one per core.
+        Returns:
+            A dict keyed by the momentum label of the eigenvalues, ascending.
+            The little group is not resolved here: the momentum sector is one
+            block, and the point-group irreps are what `spectra` adds on top.
+        Raises:
+            ValueError: if the couplings are not closed under the space group.
+        '''
+        self.check_symmetry()
+        return kernel.spectra_free(self, count=count, sztot=Sztot, threads=threads)
+
     def check_symmetry(self) -> None:
         '''
         Check that the couplings are closed under the space group.

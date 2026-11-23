@@ -134,6 +134,8 @@ struct SectorMap {
     std::vector<int> representative; // the word of every orbit
     std::vector<int> start;          // the states of an orbit: start[o]..start[o + 1]
     std::vector<int> states;
+    std::vector<int> stabiliser_start;   // and the translations that fix the orbit
+    std::vector<short> stabiliser;
     int orbits = 0;
 };
 
@@ -147,6 +149,18 @@ struct SectorMap {
  * @short Label the translation orbits of a momentum sector.
  */
 SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& translations);
+
+/**
+ * @param full the orbit labels, as sector_map builds them.
+ * @param characters the character of the momentum at every translation.
+ * @detail An orbit whose column vanishes for this momentum -- the character is
+ *         nontrivial on the orbit's stabiliser -- is dropped and its states are
+ *         labelled -1, so the product skips the images that fall in it.  This is
+ *         the same selection the momentum basis makes when it discards a column of
+ *         vanishing norm.
+ * @short Restrict the orbit labels to one momentum.
+ */
+SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& characters);
 
 /**
  * @param basis the computational basis.

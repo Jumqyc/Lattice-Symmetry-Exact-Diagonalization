@@ -326,6 +326,46 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     return out
 
 
+def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
+                 threads: int = 0) -> dict:
+    '''
+    The lowest levels of every momentum, matrix-free.
+
+    No momentum basis, no sector Hamiltonian and no block is formed: a state is
+    labelled by (orbit, translation) once, and every momentum's product is applied
+    to vectors directly.  The price is that the product is paid at every step of
+    the recurrence instead of being read from a matrix, which is what a lattice too
+    large for the matrix can afford -- and what a lattice that fits should not use.
+
+    Args:
+        model: the model.
+        count: how many levels per momentum.
+        sztot: total charge, or None for the whole space.
+        threads: workers for the product; 0 means one per core.
+    Returns:
+        A dict keyed by the momentum label of the eigenvalues, ascending.
+    '''
+    require()
+    basis = basis_of(model, sztot)
+    terms = coupling_terms(model)
+    translations = globals()["translations"](model)
+    orbits = _edkern.sector_map(basis, translations)   # the orbits do not depend on k
+    budget = max(200, 40 * count)
+    out = {}
+    for k in model.tr_group.all_momenta():
+        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+        # the orbits whose column is empty for this momentum are dropped, the same
+        # way the momentum basis drops them
+        sector = _edkern.sector_subset(orbits, characters)
+        if sector.orbits == 0:
+            continue
+        product = (lambda vector: _edkern.sector_apply(basis, terms, sector, characters,
+                                                       vector, threads))
+        out[k] = np.asarray(_edkern.lowest_eigenvalues_free(
+            product, sector.orbits, min(count, sector.orbits), budget, 1e-10, threads))
+    return out
+
+
 def sectors(model: 'Model', sztot: Optional[int] = None,
             spin_flip: bool = False) -> dict:
     '''

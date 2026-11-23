@@ -450,6 +450,7 @@ SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vecto
     return transpose(by_column);
 }
 
+
 }  // namespace ed
 
 namespace ed {
@@ -462,6 +463,7 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
     out.orbit.assign(static_cast<std::size_t>(n), -1);
     out.translation.assign(static_cast<std::size_t>(n), 0);
     out.start.push_back(0);
+    out.stabiliser_start.push_back(0);
     for (int state = 0; state < n; ++state) {
         if (out.orbit[state] >= 0) continue;          // its orbit is already labelled
         const int label = out.orbits;
@@ -487,6 +489,14 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
         std::sort(members.begin(), members.end());
         for (const int member : members) out.states.push_back(member);
         out.start.push_back(static_cast<int>(out.states.size()));
+        // the translations that leave the representative in place: the character
+        // has to be trivial on them, or the column is empty
+        for (int g = 0; g < groups; ++g) {
+            const std::uint64_t image = apply(basis, translations[g], smallest).first;
+            if (static_cast<int>(image) == representative || basis.index(image) == representative)
+                out.stabiliser.push_back(static_cast<short>(g));
+        }
+        out.stabiliser_start.push_back(static_cast<int>(out.stabiliser.size()));
         out.representative.push_back(representative);
         ++out.orbits;
     }
@@ -533,9 +543,13 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
                     for (const auto& entry : images) {
                         const int target = entry.first;
                         const int other = sector.orbit[target];
+                        if (other < 0) continue;      // that column is empty for this momentum
                         const Complex column = std::conj(characters[sector.translation[target]])
                                                / length[static_cast<std::size_t>(other)];
-                        inner += entry.second * std::conj(column) * vector[other];
+                        // H[s, s'] times the column weight B[s', O'] and the
+                        // entry of the vector on that orbit (the phase of the row
+                        // is applied once, outside)
+                        inner += entry.second * column * vector[other];
                     }
                 }
                 total += std::conj(weight) * inner;
@@ -543,6 +557,35 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
             out[label] = total;
         }
     }, threads);
+    return out;
+}
+
+
+SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& characters)
+{
+    SectorMap out;
+    out.orbit.assign(full.orbit.size(), -1);
+    out.translation = full.translation;
+    out.start.push_back(0);
+    out.stabiliser_start.push_back(0);
+    for (int label = 0; label < full.orbits; ++label) {
+        // the weight of the column: the character summed over the stabiliser of the
+        // orbit; it vanishes exactly when the momentum is incompatible with it
+        Complex sum{0.0, 0.0};
+        for (int at = full.stabiliser_start[label]; at < full.stabiliser_start[label + 1]; ++at)
+            sum += characters[full.stabiliser[at]];
+        if (std::abs(sum) <= 1e-12) continue;
+        const int kept = out.orbits++;
+        for (int at = full.start[label]; at < full.start[label + 1]; ++at) {
+            out.states.push_back(full.states[at]);
+            out.orbit[full.states[at]] = kept;
+        }
+        out.start.push_back(static_cast<int>(out.states.size()));
+        for (int at = full.stabiliser_start[label]; at < full.stabiliser_start[label + 1]; ++at)
+            out.stabiliser.push_back(full.stabiliser[at]);
+        out.stabiliser_start.push_back(static_cast<int>(out.stabiliser.size()));
+        out.representative.push_back(full.representative[label]);
+    }
     return out;
 }
 
