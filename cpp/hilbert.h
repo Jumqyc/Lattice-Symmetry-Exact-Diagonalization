@@ -2,7 +2,6 @@
 
 #include <complex>
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 #include "base_types.h"
@@ -50,13 +49,16 @@ public:
     /**
      * @param word packed basis state.
      * @return The index of *word* in the basis, or -1 if it is not in it.
-     * @detail Three representations, chosen by the size of the code space: a
-     *         direct table when it is small, a bit vector with a rank sample every
-     *         512 states when it is large, and a hash map when even the bit
-     *         vector would be huge.  The bit vector matters: a table of one int
-     *         per code-space word is tens of megabytes at five by five and every
-     *         lookup in it is a cache miss, while the bit vector and its samples
-     *         are a few megabytes and stay resident.
+     * @detail The basis is the set of words whose local charges sum to the
+     *         requested total, so its enumeration order is a mixed-radix ordering
+     *         of those words and the index is the number of valid words before it.
+     *         That count splits by the first digit at which a word differs, which
+     *         makes it a sum over the digits of a precomputed table of suffix
+     *         completions -- the multinomial generalization of the binomial
+     *         ranking of combinations.  Nothing over the code space is stored, so
+     *         the lookup needs the same few kilobytes whether the basis has a
+     *         thousand states or ten billion; it costs a pass over the digits
+     *         instead of one memory access, which is the trade it makes.
      */
     int index(std::uint64_t word) const;
 
@@ -74,21 +76,27 @@ public:
     void unpack_into(std::uint64_t word, std::vector<int>& digits) const;
 
 private:
-    void build_lookup();
+    /**
+     * @detail Fills the table of suffix completions the index is built from: for
+     *         every suffix start and every reachable remaining charge, how many
+     *         ways the rest of the lattice can be filled.
+     */
+    void prepare_counts();
 
     int sites_ = 0;
     int local_dim_ = 1;
     int bits_ = 0;
     std::vector<int> charge_;
     std::vector<std::uint64_t> states_;
-    // one bit per code-space word when that is cheaper than a table, and a hash
-    // map when even the bits would not fit
-    std::vector<int> dense_;
-    int dense_limit_ = 0;
-    std::vector<std::uint64_t> bitset_;
-    std::vector<int> rank_;                 // one entry per 512 words of code space
-    int rank_shift_ = 9;
-    std::unordered_map<std::uint64_t, int> sparse_;
+    // how many completions of the suffix k..sites-1 have a given total charge,
+    // indexed by k * width_ + (charge - low_): the index of a word is a sum over
+    // these counts, so no structure over the code space is needed
+    std::vector<long long> count_;
+    int low_ = 0;
+    int high_ = 0;
+    int width_ = 0;
+    bool constrained_ = false;
+    int sztot_ = -1;
 };
 
 /**

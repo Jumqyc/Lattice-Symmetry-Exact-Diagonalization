@@ -65,71 +65,70 @@ Basis::Basis(int sites, int local_dim, std::vector<int> charge, int sztot)
             }
         };
     walk(0, 0ull, sztot >= 0 ? sztot : 0);
-    build_lookup();
+    sztot_ = sztot;
+    constrained_ = sztot >= 0;
+    if (constrained_) prepare_counts();
 }
 
-void Basis::build_lookup()
+void Basis::prepare_counts()
 {
-    const long long space = [&] {
-        long long s = 1;
-        for (int i = 0; i < sites_; ++i) {
-            s <<= bits_;
-            if (s > (1LL << 40)) break;
-        }
-        return s;
-    }();
-    // A table of one int per word is the fastest lookup and is used while it is
-    // small; past that one bit per word plus a rank sample every 512 words is
-    // thirty times smaller and stays in cache, which is what a sector product
-    // cares about; past a bit vector of 128 MB even that is dropped for a hash.
-    if (space <= (1LL << 16)) {
-        dense_limit_ = static_cast<int>(space);
-        dense_.assign(static_cast<std::size_t>(space), -1);
-        for (int i = 0; i < size(); ++i) dense_[states_[i]] = i;
-        return;
+    // The index of a word is the number of valid words before it in the
+    // enumeration order, and those words split by the first digit at which they
+    // differ from it: what is needed is how many ways the remaining sites can be
+    // filled for a given remaining charge, filled from the end of the lattice
+    // towards its start.  For a fixed number of ones this is the binomial table of
+    // the combinatorial number system; for a general local dimension and charge
+    // assignment it is the multinomial one.
+    int lowest = charge_[0];
+    int highest = charge_[0];
+    for (const int value : charge_) {
+        lowest = std::min(lowest, value);
+        highest = std::max(highest, value);
     }
-    if (space <= (1LL << 30)) {
-        dense_limit_ = static_cast<int>(space);
-        bitset_.assign(static_cast<std::size_t>(space + 63) / 64, 0);
-        for (int i = 0; i < size(); ++i)
-            bitset_[states_[i] >> 6] |= 1ull << (states_[i] & 63);
-        rank_.assign(static_cast<std::size_t>(space >> rank_shift_) + 2, 0);
-        const std::size_t words_per_block = static_cast<std::size_t>(1) << (rank_shift_ - 6);
-        int total = 0;
-        for (std::size_t block = 0; block < rank_.size(); ++block) {
-            rank_[block] = total;
-            const std::size_t begin = block * words_per_block;
-            const std::size_t end = std::min(begin + words_per_block, bitset_.size());
-            for (std::size_t word = begin; word < end; ++word)
-                total += __builtin_popcountll(bitset_[word]);
+    low_ = lowest * sites_;
+    high_ = highest * sites_;
+    width_ = high_ - low_ + 1;
+    count_.assign(static_cast<std::size_t>(sites_ + 1) * width_, 0);
+    count_[static_cast<std::size_t>(sites_) * width_ + (0 - low_)] = 1;
+    for (int k = sites_ - 1; k >= 0; --k)
+        for (int charge = low_; charge <= high_; ++charge) {
+            long long total = 0;
+            for (int state = 0; state < local_dim_; ++state) {
+                const int rest = charge - charge_[state];
+                if (rest < low_ || rest > high_) continue;
+                total += count_[static_cast<std::size_t>(k + 1) * width_ + (rest - low_)];
+            }
+            count_[static_cast<std::size_t>(k) * width_ + (charge - low_)] = total;
         }
-        return;
-    }
-    sparse_.reserve(states_.size());
-    for (int i = 0; i < size(); ++i) sparse_[states_[i]] = i;
 }
 
 int Basis::index(std::uint64_t word) const
 {
-    if (!dense_.empty()) {
-        if (word >= static_cast<std::uint64_t>(dense_limit_)) return -1;
-        return dense_[word];
+    // without a charge constraint every word is in the basis and the enumeration
+    // order is the plain mixed-radix one
+    if (!constrained_) {
+        int rank = 0;
+        for (int k = 0; k < sites_; ++k) {
+            const int digit = this->digit(word, k);
+            if (digit >= local_dim_) return -1;
+            rank = rank * local_dim_ + digit;
+        }
+        return rank;
     }
-    if (!bitset_.empty()) {
-        if (word >= static_cast<std::uint64_t>(dense_limit_)) return -1;
-        if ((bitset_[word >> 6] & (1ull << (word & 63))) == 0) return -1;
-        // the rank: the sample of this block, then the words before the word
-        // itself, then the bits below the state inside it
-        const std::size_t block = static_cast<std::size_t>(word) >> rank_shift_;
-        int result = rank_[block];
-        const std::uint64_t begin = static_cast<std::uint64_t>(block) << rank_shift_;
-        for (std::uint64_t at = begin; at + 64 <= word; at += 64)
-            result += __builtin_popcountll(bitset_[at >> 6]);
-        result += __builtin_popcountll(bitset_[word >> 6] & ((1ull << (word & 63)) - 1ull));
-        return result;
+    int rank = 0;
+    int remaining = sztot_;
+    for (int k = 0; k < sites_; ++k) {
+        const int digit = this->digit(word, k);
+        if (digit >= local_dim_) return -1;
+        for (int state = 0; state < digit; ++state) {
+            const int rest = remaining - charge_[state];
+            if (rest < low_ || rest > high_) continue;
+            rank += static_cast<int>(count_[static_cast<std::size_t>(k + 1) * width_
+                                                + (rest - low_)]);
+        }
+        remaining -= charge_[digit];
     }
-    const auto it = sparse_.find(word);
-    return it == sparse_.end() ? -1 : it->second;
+    return remaining == 0 ? rank : -1;
 }
 
 int Basis::digit(std::uint64_t word, int site) const
