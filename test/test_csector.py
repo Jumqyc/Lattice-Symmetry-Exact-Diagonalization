@@ -234,6 +234,45 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
     return ok
 
 
+def test_backend(model: Model, Sztot, label: str, spin_flip: bool = False,
+                 tol: float = 1e-9, verbose: bool = True) -> bool:
+    '''
+    The kernel backend of ``build_sectors`` against the Python one.
+
+    Both produce an orthonormal basis of the same sector and the restriction of
+    the same Hamiltonian to it, so the bases may differ by a rotation inside the
+    sector: what is compared is the projector onto the sector, which that
+    rotation leaves alone, and the spectrum of the block.
+    '''
+    reference = model.build_sectors(Sztot=Sztot, spin_flip=spin_flip, backend='python')
+    built = model.build_sectors(Sztot=Sztot, spin_flip=spin_flip, backend='kernel')
+    rng = np.random.default_rng(20261123)
+    ok = set(reference) == set(built)
+    worst_dim = 0
+    worst_spectrum = 0.0
+    worst_projector = 0.0
+    for key in reference:
+        first, second = reference[key], built[key]
+        worst_dim = max(worst_dim, abs(first.hamiltonian.shape[0] - second.hamiltonian.shape[0]))
+        worst_spectrum = max(worst_spectrum, float(np.max(np.abs(
+            np.sort(np.linalg.eigvalsh(first.hamiltonian.toarray()))
+            - np.sort(np.linalg.eigvalsh(second.hamiltonian.toarray()))))))
+        # the projectors are never formed: they are compared on a few seeded
+        # random vectors, which costs the nonzeros of the basis instead of the
+        # square of the Hilbert space
+        probes = rng.standard_normal((first.basis.shape[0], 3))
+        projected_first = np.asarray(first.basis @ (first.basis.conj().T @ probes))
+        projected_second = np.asarray(second.basis @ (second.basis.conj().T @ probes))
+        worst_projector = max(worst_projector,
+                              float(np.max(np.abs(projected_first - projected_second))))
+    ok = ok and worst_dim == 0 and worst_spectrum < tol and worst_projector < tol
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  {label} backend: {len(built)} sectors, same keys "
+              f"{set(reference) == set(built)}, dimension mismatch {worst_dim}, "
+              f"max |dE| {worst_spectrum:.1e}, projector difference {worst_projector:.1e}")
+    return ok
+
+
 def test_lanczos(model: Model, Sztot, label: str, tol: float = 1e-8,
                  verbose: bool = True) -> bool:
     '''Lanczos reproduces the lowest dense eigenvalues of a sector Hamiltonian.'''
@@ -294,6 +333,9 @@ def main():
         test_hamiltonian(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
+        test_backend(model, sztot, label)
+        if sztot is None:
+            test_backend(model, sztot, label + ', spin flip', spin_flip=True)
         print()
 
 

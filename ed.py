@@ -29,6 +29,8 @@ from numpy.typing import NDArray
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix
 
+import kernel
+
 from base import HilbertAction, LatticeAction, PointGroup
 from hilbert_action import MonomialAction, Permutation, extract_monomial, from_lattice_action
 from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
@@ -698,7 +700,8 @@ class Model:
                               self.species, local)
 
     def build_sectors(self, Sztot: Optional[int] = None,
-                      spin_flip: bool = False
+                      spin_flip: bool = False,
+                      backend: str = 'python'
                       ) -> dict[SectorKey, Sector]:
         '''
         Full symmetry-resolved decomposition of the Hamiltonian.
@@ -712,10 +715,17 @@ class Model:
             Sztot: If given, work in the sector ``sum(state) == Sztot``.
             spin_flip: If True, also resolve the spin-flip parity
                 ``F: σ_i → d-1-σ_i``.
+            backend: ``'python'`` for the reference implementation in this
+                module, ``'kernel'`` for the compiled one, ``'auto'`` for the
+                kernel when it is available.  The two are compared in the tests;
+                the kernel is the one to use.
         Returns:
             A dict keyed by ``(k, alpha, s)`` — ``alpha`` is None when the point
             group is trivial and ``s`` is None when *spin_flip* is False — of
             :class:`Sector` objects holding the basis and the block Hamiltonian.
+        Raises:
+            ValueError: if *backend* is not one of the three, or if *spin_flip*
+                is asked for a charge sector the spin flip does not preserve.
         '''
         if spin_flip and Sztot is not None and \
                 2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
@@ -723,6 +733,12 @@ class Model:
                 "The spin flip maps sum(state) == Sztot onto "
                 "L(d-1) - Sztot; it is a symmetry of a single sector only when "
                 "Sztot is self-conjugate.")
+        if backend not in ('python', 'kernel', 'auto'):
+            raise ValueError(f"backend must be 'python', 'kernel' or 'auto', not {backend!r}")
+        if backend == 'kernel' or (backend == 'auto' and kernel.available()):
+            built = kernel.sectors(self, Sztot, spin_flip)
+            return {key: Sector(key=key, basis=basis, hamiltonian=block)
+                    for key, (basis, block) in built.items()}
         states, s2i = self._hilbert_space(Sztot)
         H_sym = self._build_H_sym(Sztot)
         sectors: dict[SectorKey, Sector] = {}

@@ -84,6 +84,8 @@ PYBIND11_MODULE(_edkern, m)
     m.def("multiply", &ed::multiply, py::arg("matrix"), py::arg("vector"));
 
     py::class_<ed::PhasedPermutation>(m, "PhasedPermutation")
+        .def(py::init<std::vector<int>, std::vector<ed::Complex>>(),
+             py::arg("act"), py::arg("phase"))
         .def_readonly("act", &ed::PhasedPermutation::act)
         .def_readonly("phase", &ed::PhasedPermutation::phase);
 

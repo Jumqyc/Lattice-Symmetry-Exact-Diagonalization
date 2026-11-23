@@ -25,6 +25,7 @@ the oracle the sparse results are compared against.
 | `hilbert_action.py` | how an action acts on the computational basis |
 | `geometry/2dsym.py` | `C_n` and `D_n` in two dimensions |
 | `ed.py` | `Model`, `Coupling`, sectors and their spectra |
+| `kernel.py` | the bridge: the model as the arrays the kernel takes, and back |
 | `cpp/` | the kernel: basis, monomial actions, Hamiltonian, sectors, solvers |
 | `test/` | one script per layer, comparing the kernel against the Python reference |
 | `doc/` | the write-up |
@@ -37,6 +38,10 @@ uv venv .venv
 uv pip install -r requirements.txt
 .venv/bin/python cpp/build.py
 ```
+
+`Model.build_sectors` runs on the kernel through `kernel.py`; the Python
+implementation of the same steps is kept next to it as the reference the tests
+compare against, and is selected with `backend='python'`.
 
 `cpp/build.py` compiles `cpp/*.cpp` into `_edkern<ext>` in the repository root;
 that file is a build artefact and is not committed.  It needs a C++17 compiler
