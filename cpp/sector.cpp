@@ -345,8 +345,16 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
     by_column.rows = count;
     by_column.cols = count;
     by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
+    // The entries of one column are scattered into a scratch that has the size
+    // of the sector and is reset through a stamp, so no vector of the size of
+    // the sector is ever refilled and no list is ever sorted: the work follows
+    // the number of nonzeros of the column.  Sorting the entry list instead was
+    // both slower here and, for a large sector, the only quadratic term left.
+    std::vector<Complex> row(static_cast<std::size_t>(count), Complex{0.0, 0.0});
+    std::vector<int> stamp(static_cast<std::size_t>(count), -1);
+    std::vector<int> touched;
     std::vector<std::pair<int, Complex>> product;   // H B, column c: (state row, value)
-    std::vector<std::pair<int, Complex>> terms;     // B^T H B, column c: (sector row, value)
+    int colour = 0;
     for (int c = 0; c < count; ++c) {
         // Y = H B, column c
         product.clear();
@@ -356,28 +364,27 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
             for (int b = hamiltonian_t.indptr[state]; b < hamiltonian_t.indptr[state + 1]; ++b)
                 product.emplace_back(hamiltonian_t.indices[b], hamiltonian_t.data[b] * weight);
         }
-        // B^T Y, column c: the entries are accumulated in a list and merged,
-        // never scattered into a vector of the size of the sector, which would
-        // make the cost of this loop quadratic in the sector dimension
-        terms.clear();
+        // B^T Y, column c
+        ++colour;
+        touched.clear();
         for (const auto& entry : product)
-            for (int b = columns_t.indptr[entry.first]; b < columns_t.indptr[entry.first + 1]; ++b)
-                terms.emplace_back(columns_t.indices[b],
-                                   std::conj(columns_t.data[b]) * entry.second);
-        std::sort(terms.begin(), terms.end(),
-                  [](const auto& left, const auto& right) { return left.first < right.first; });
-        for (std::size_t i = 0; i < terms.size();) {
-            const int row = terms[i].first;
-            Complex sum{0.0, 0.0};
-            std::size_t j = i;
-            while (j < terms.size() && terms[j].first == row) {
-                sum += terms[j].second;
-                ++j;
+            for (int b = columns_t.indptr[entry.first]; b < columns_t.indptr[entry.first + 1]; ++b) {
+                const int target = columns_t.indices[b];
+                if (stamp[target] != colour) {
+                    stamp[target] = colour;
+                    row[target] = Complex{0.0, 0.0};
+                    touched.push_back(target);
+                }
+                row[target] += std::conj(columns_t.data[b]) * entry.second;
             }
-            i = j;
-            if (std::abs(sum) < 1e-14) continue;
-            by_column.indices.push_back(row);
-            by_column.data.push_back(sum);
+        // the row indices of a column have to be increasing for the result to be
+        // a canonical CSR matrix, and there are few of them
+        std::sort(touched.begin(), touched.end());
+        for (const int target : touched) {
+            const Complex value = row[target];
+            if (std::abs(value) < 1e-14) continue;
+            by_column.indices.push_back(target);
+            by_column.data.push_back(value);
         }
         by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
     }
