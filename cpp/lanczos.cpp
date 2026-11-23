@@ -266,12 +266,11 @@ std::vector<double> solve(const MatrixVector& multiply, int dimension, int count
             done = true;
             break;
         }
-        if (length <= tolerance)
-            throw std::runtime_error("Lanczos did not converge: the Krylov space closed before "
-                                     "enough eigenvalues were resolved");
         current = std::move(next);
-        for (auto& value : current) value /= length;
-        if (static_cast<int>(fresh.size()) < cycle && total < iterations) continue;
+        if (length > tolerance) {
+            for (auto& value : current) value /= length;
+            if (static_cast<int>(fresh.size()) < cycle && total < iterations) continue;
+        }
 
         // thick restart: the wanted Ritz vectors of this cycle become the kept
         // ones, and the vector after the last of them continues the recurrence
@@ -297,9 +296,17 @@ std::vector<double> solve(const MatrixVector& multiply, int dimension, int count
         fresh.clear();
         diagonal.clear();
         subdiagonal.clear();
+        if (length <= tolerance) {
+            // A single start vector reaches one vector per *distinct* eigenvalue,
+            // so a degenerate level closes the Krylov space with fewer vectors than
+            // were asked for.  The remaining copies live in the orthogonal
+            // complement: the recurrence continues from a fresh direction there,
+            // which is what resolves them, one per cycle.
+            for (auto& value : current) value = Complex{normal(rng), normal(rng)};
+        }
         for (int pass = 0; pass < 2; ++pass) orthogonalise(current, kept);
         const double rescale = norm(current);
-        if (rescale <= 0.0)
+        if (rescale <= 1e-12)
             throw std::runtime_error("Lanczos lost its direction during a restart");
         for (auto& value : current) value /= rescale;
     }
