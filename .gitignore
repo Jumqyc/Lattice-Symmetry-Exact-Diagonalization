@@ -7,6 +7,8 @@
 *.gz
 *.out
 *.toc
+# the note is built with latexmk; the PDF is not tracked
+doc/main.pdf
 __pycache__/
 .venv/
 texput.log
