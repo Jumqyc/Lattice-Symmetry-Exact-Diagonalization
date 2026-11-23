@@ -569,27 +569,40 @@ into orbits. Because $\Pi_\alpha$ commutes with every $U(R)$, it does not mix
 orbits: $\Pi_\alpha$ maps the span of an orbit onto itself. This observation is
 what makes the projection practical, and it is worth spelling out.
 
-Restricted to one orbit of size $o$, the operator \eqref{eq:Pi} is an $o\times o$
-Hermitian matrix that can be written down from the phases \eqref{eq:phased}
-alone. Its eigenvectors with eigenvalue $1$ are an orthonormal basis of the
-$\alpha$-isotypic component of that orbit's span; its other eigenvalues vanish.
-Diagonalizing $o\times o$ matrices and collecting the eigenvectors with
-eigenvalue $1$ therefore produces an orthonormal basis $V$ of the whole
-$\alpha$-isotypic component, because orbits are disjoint and vectors supported on
-different orbits are orthogonal. The cost is
+Restricted to one orbit of size $o$, the operator \eqref{eq:Pi} maps the span of
+the orbit into itself, and the phases \eqref{eq:phased} are all that is needed to
+write it down. Projecting the $o$ basis vectors of the orbit and orthonormalizing
+the images one after another therefore produces an orthonormal basis of the
+$\alpha$-isotypic component of that orbit's span: a vector that is dependent on
+those already kept is dropped, and the number kept is not a matter of taste but
+an invariant, the rank of the projector on the orbit,
+\begin{equation}
+  \operatorname{rank}\bigl(\Pi_\alpha\big|_{\text{orbit}}\bigr)
+  = \frac{d_\alpha}{|\Gk|}\sum_{R\in\Gk}\chi_\alpha^{*}(R)
+    \operatorname{tr}\bigl(U(R)\big|_{\text{orbit}}\bigr)
+  = \frac{d_\alpha}{|\Gk|}\sum_{R\in\Gk}\chi_\alpha^{*}(R)
+    \sum_{\substack{x \in \text{orbit}\\ R x = x}} \omega_R(x) ,
+  \label{eq:rank}
+\end{equation}
+which the characters fix without diagonalizing anything; a mismatch between
+\eqref{eq:rank} and what the orthonormalization finds means that the action and
+the character table disagree. Orbits are disjoint, so the union over orbits is an
+orthonormal basis $V$ of the whole $\alpha$-isotypic component. The work is
 \begin{equation}
   \sum_{\text{orbits}}\Bigl(|\Gk|\,o^{2} + o^{3}\Bigr), \qquad o \le |\Gk| \le |\Gpt| ,
 \end{equation}
-and it does not grow with the sector dimension $M_{\mathbf{n}}$: the largest
-matrix that is ever diagonalized has the size of the little group, twelve for
-$D_6$.
+and no object in it grows with the sector dimension $M_{\mathbf{n}}$: the largest
+matrix that is ever touched has the size of the little group, twelve for $D_6$.
 
-The alternative, projecting each basis vector and then orthonormalizing the
-result, is both more expensive and more delicate: for $d_\alpha > 1$ the
-projected vectors are neither orthogonal nor independent, and the Gram matrix
-that repairs them is of the size of the sector. The orbit decomposition avoids
-that matrix entirely. In floating point the eigenvalue test needs a threshold;
-eigenvalues of $\Pi_\alpha$ are $0$ or $1$, so a cut at $1/2$ is safe.
+The alternative, projecting every basis vector of the sector at once, is the more
+expensive and more delicate route: for $d_\alpha > 1$ the images are neither
+orthogonal nor independent, and repairing them means a Gram matrix of the size of
+the sector, which is exactly the dense object this decomposition exists to avoid.
+It is worth noting what \eqref{eq:rank} does for the numerics. The rank is an
+integer, so the orthonormalization needs a threshold; the residual of a vector is
+either zero or of order one, and $10^{-8}$ separates the two without ambiguity.
+The dimension is checked against \eqref{eq:rank} rather than inferred from the
+threshold, which is what makes the threshold safe.
 
 \subsection{The block}
 
@@ -598,6 +611,11 @@ With $V$ the orthonormal basis of the $\alpha$-isotypic component, the block is
   H_{\mathbf{n},\alpha} = V^{\dagger}H_{\mathbf{n}}V .
   \label{eq:block}
 \end{equation}
+Both factors are sparse and every vector of $V$ lives on one orbit, so the block
+comes out sparse as well: for the models in Section~\ref{sec:checks} it holds
+between $0.3\%$ and $4\%$ of its dense entries. It is never assembled densely,
+and it is diagonalized without being assembled densely either
+(Section~\ref{sec:algorithm}).
 Since $[H,U(R)] = 0$ and $\Pi_\alpha$ is a projector onto an invariant subspace,
 $H_{\mathbf{n},\alpha}$ is the restriction of $H$ to that subspace, and the
 eigenvalues of $H$ are the union over $(\mathbf{n},\alpha)$ of the eigenvalues of
@@ -734,25 +752,37 @@ that satisfy \eqref{eq:little} and compute their phased permutation
 sends a column outside the sector, the construction has a defect and this is
 where it shows: the code raises rather than continuing.
 
-\item \textbf{Blocks.} Group the columns into orbits of $\Gk$, diagonalize the
-projector \eqref{eq:Pi} orbit by orbit, keep the eigenvectors with unit
-eigenvalue, and form $V^{\dagger}H_{\mathbf{n}}V$.
+\item \textbf{Blocks.} Group the columns into orbits of $\Gk$, project each
+orbit's basis vectors, orthonormalize the images in place so that the number kept
+is the rank \eqref{eq:rank}, and form $V^{\dagger}H_{\mathbf{n}}V$. The result is
+sparse, and it is the last object in the pipeline whose size is set by the
+sector.
 
-\item \textbf{Diagonalize.} With the blocks in hand, use a dense solver for the
-small ones and an iterative one for the large ones. The two are not
-interchangeable: a single-vector Lanczos recursion resolves distinct levels only,
-so a degenerate multiplet contributes one Ritz value and not one per copy, and an
-unconverged Ritz value is a number between two levels and not an eigenvalue of
-anything. Either compare against distinct levels or read multiplicities from the
-character of $H$ itself, and check residuals before accepting a Ritz value.
+\item \textbf{Diagonalize.} The blocks are sparse, so the eigensolver is a
+Lanczos recurrence: $H$ is applied to a vector, the recurrence is reorthogonalized
+and the two diagonals of the tridiagonal are all that is kept. The Ritz values
+come from bisection on the inertia count of $T - x$, and the residual of a Ritz
+pair from the last component of its eigenvector, which inverse iteration on the
+tridiagonal supplies; no matrix of the size of the recurrence is formed either.
+Two properties of this step decide how it is used. A single-vector recursion
+resolves distinct levels only, so a degenerate multiplet contributes one Ritz
+value and not one per copy; and an unconverged Ritz value is a number between two
+levels rather than an eigenvalue of anything, which is why the residual is tested
+and the call throws instead of returning. Within that contract the returned
+values are eigenvalues, and the lowest of them is the minimum; how many copies of
+each level the sector holds has to be read elsewhere, from the character of the
+Hamiltonian or from a dense solve of a block small enough to afford one.
 \end{enumerate}
 
 The cost of the symmetry machinery is dominated by step~5, which is
-$|\Gtr|$ state actions per orbit, and by step~7, whose largest matrix has the
-size of the little group. Neither grows with the block dimension. What grows is
-step~9: the eigensolver is the only part of the procedure that scales as the cube
-of the block, and it dominates for any lattice on which the method is worth
-using.
+$|\Gtr|$ state actions per orbit, and by step~7, whose largest matrix has the size
+of the little group. Neither grows with the block dimension. What grows is
+step~9: the recurrence is the only part of the procedure whose cost scales
+faster than the number of nonzeros, and it dominates for any lattice on which the
+method is worth using. With full reorthogonalization its cost is
+$\mathcal{O}(m^{2}b)$ for $m$ steps and a block of $b$ columns, which is why a
+restarted recurrence -- keeping a working set instead of every vector -- is the
+next thing to reach for once the blocks pass a few thousand columns.
 
 \section{Numerical checks}\label{sec:checks}
 
@@ -805,20 +835,24 @@ $\omega_\rho(\mu)$; then
 
 \begin{table}[t]
 \centering
-\begin{tabular}{lccccc}
+\footnotesize
+\begin{tabular}{lcccccc}
 \toprule
-model & $|\Glatt|$ & states & sectors & largest block & time \\
+model & $|\Glatt|$ & states & sectors & largest & nnz of the & time \\
+ & & & & block & blocks (\% of dense) & \\
 \midrule
-$3\times3$ square, $D_4$, full space & 72 & 512 & 21 & 38 & 11\,ms \\
-$3\times3$ triangular, $D_6$, full space & 108 & 512 & 23 & 38 & 23\,ms \\
-$4\times4$ square, $D_4$, half filling & 128 & 12\,870 & 42 & 436 & 6.9\,s \\
+$3\times3$ square $D_4$, full space & 72 & 512 & 21 & 38 & 1\,952 (13\%) & 16\,ms \\
+$3\times3$ triangular $D_6$, full space & 108 & 512 & 23 & 38 & 2\,376 (16\%) & 25\,ms \\
+$4\times4$ square $D_4$, half filling & 128 & 12\,870 & 42 & 436 & 189\,922 (4.1\%) & 1.5\,s \\
 \bottomrule
 \end{tabular}
-\caption{Sizes for three Heisenberg models. The time is the whole pipeline of
-Section~\ref{sec:algorithm} through the diagonalization of every block, on one
-core. For the $4\times4$ model $6.0$ of the $6.9$ seconds are spent inside the
-dense eigensolver; the symmetry machinery, including the assembly of the
-Hamiltonian, accounts for the remaining $0.9$ seconds.}
+\caption{Sizes and timings for three Heisenberg models, from the assembly of the
+Hamiltonian to the four lowest levels of every block, on one core. The blocks are
+sparse: the last column before the time gives their total number of nonzeros
+against what the same blocks would hold if they were stored densely. For the
+$4\times4$ model, $0.51\,$s is the Hamiltonian, $0.14\,$s the momentum sectors and
+the blocks, and $0.88\,$s the Lanczos recurrence; no dense matrix of the size of a
+sector is ever formed.}
 \label{tab:sizes}
 \end{table}
 
@@ -876,10 +910,12 @@ labelled by an integer vector, and the little group is what remains of the point
 group at that label; the induced representations are the bookkeeping that
 restores the whole star. The second is that the cost of the symmetry machinery is
 independent of the size of the blocks: it is set by the number of states, the
-number of translations, and the order of the little group. Once the decomposition
-is correct, the remaining bottleneck is the diagonalization itself, and that is
-the point at which one should reach for iterative methods, distributed memory, or
-a matrix-free formulation of the block.
+number of translations and the order of the little group, and it produces blocks
+that hold a few per cent of their dense entries. What remains is the recurrence,
+whose cost grows with the square of its length; a restarted recurrence, a block
+recurrence, or a matrix-free block that is never assembled at all are the natural
+next steps, and all three are changes to the solver rather than to the
+decomposition.
 
 \bibliographystyle{plain}
 \bibliography{bib}

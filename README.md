@@ -9,6 +9,12 @@ loops over states, columns or group elements is a C++ extension; the Python
 implementation of the same steps stays in the tree as the reference the kernel is
 tested against.
 
+Every object that scales with the Hilbert space is sparse -- the computational
+basis, the momentum sectors, the adapted vectors, the blocks and the Lanczos
+recurrence itself -- and no dense matrix of the size of a sector is formed
+anywhere in the library.  Dense matrices appear only in the tests, where they are
+the oracle the sparse results are compared against.
+
 ## Layout
 
 | path | contents |
