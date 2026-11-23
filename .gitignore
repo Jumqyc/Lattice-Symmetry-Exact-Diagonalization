@@ -7,3 +7,5 @@
 __pycache__/
 .venv/
 texput.log
+# compiled kernel, built with python cpp/build.py
+_edkern*
