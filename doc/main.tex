@@ -824,18 +824,17 @@ does,
   U(g)U(h) = U(gh),
 \end{equation}
 and the character tables of all little groups that occur are orthonormal and
-satisfy $\sum_\alpha d_\alpha^2 = |\Gk|$. For a generic finite group, whose
-multiplication table is what one actually knows, the irreducible characters are
-computed from the class algebra: the matrices
-$(N_\mu)_{\nu\lambda} = a^{\lambda}_{\mu\nu}$ of structure constants commute and
-are diagonalized by a common basis, whose eigenvalues are the central characters
-$\omega_\rho(\mu)$; then
-\begin{equation}
-  d_\rho^2 = \frac{|G|}{\sum_\mu |\omega_\rho(\mu)|^2/|C_\mu|},
-  \qquad
-  \chi_\rho(\mu) = \frac{d_\rho\,\omega_\rho(\mu)}{|C_\mu|}.
-  \label{eq:chars}
-\end{equation}
+satisfy $\sum_\alpha d_\alpha^2 = |\Gk|$. Nothing generic is needed to write them
+down: a finite subgroup of $\mathrm{O}(2)$ is cyclic or dihedral, so its
+characters are known in closed form from the order $n$ of its rotation subgroup
+and from whether it contains a reflection. For $C_n$ the irreps are labelled by
+$j = 0,\dots,n-1$ with $\chi_j(r^m) = \ee^{2\pi \ii j m/n}$; for $D_n$ they are
+$A_1$, $A_2$ (and $B_1$, $B_2$ when $n$ is even), which differ only on the
+reflections, together with $(n-1)/2$ two-dimensional irreps
+$E_j$ with $\chi_{E_j}(r^m) = 2\cos(2\pi j m/n)$ on rotations and character $0$ on
+reflections. What the construction does rely on is that the operations really form
+a group: a set of matrices that is not closed produces a meaningless table and
+therefore meaningless sectors, so closure is checked when the group is built.
 
 \begin{table}[t]
 \centering
