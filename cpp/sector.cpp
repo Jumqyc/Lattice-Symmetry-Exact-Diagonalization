@@ -189,60 +189,29 @@ std::vector<Complex> block_matrix(const SparseMatrix& matrix, const SectorVector
 {
     const int m = vectors.vectors();
     if (m == 0) return {};
-    // Y = H V: one map per accepted vector, rows are sector columns
-    std::vector<std::vector<std::pair<int, Complex>>> product(m);
+
+    // V^T H V, one column at a time: H applied to the vector, then read back on
+    // the support of every vector.  A dense scratch vector of the size of the
+    // sector is the cheapest way to say this unambiguously -- the previous
+    // hand-written merge of two sorted lists was wrong for sectors whose rows
+    // are hit several times.
+    std::vector<Complex> out(static_cast<std::size_t>(m) * m, Complex{0.0, 0.0});
+    std::vector<Complex> applied(static_cast<std::size_t>(matrix.cols));
     for (int c = 0; c < m; ++c) {
-        std::vector<std::pair<int, Complex>>& column = product[c];
+        std::fill(applied.begin(), applied.end(), Complex{0.0, 0.0});
         for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
             const int source = vectors.columns[a];
             const Complex weight = vectors.data[a];
             for (int b = matrix.indptr[source]; b < matrix.indptr[source + 1]; ++b)
-                column.emplace_back(matrix.indices[b], matrix.data[b] * weight);
+                applied[matrix.indices[b]] += matrix.data[b] * weight;
         }
-        // different columns of a vector can reach the same row of H V, so the
-        // duplicates have to be summed before the two-pointer merge below
-        std::sort(column.begin(), column.end(),
-                  [](const auto& x, const auto& y) { return x.first < y.first; });
-        std::size_t keep = 0;
-        for (std::size_t i = 0; i < column.size();) {
-            std::size_t next = i;
-            Complex sum{0.0, 0.0};
-            while (next < column.size() && column[next].first == column[i].first) {
-                sum += column[next].second;
-                ++next;
-            }
-            column[keep++] = {column[i].first, sum};
-            i = next;
-        }
-        column.resize(keep);
-    }
-    // the support of every vector, as a lookup, reused for each column
-    std::vector<std::vector<std::pair<int, Complex>>> support(m);
-    for (int r = 0; r < m; ++r) {
-        for (int a = vectors.start[r]; a < vectors.start[r + 1]; ++a)
-            support[r].emplace_back(vectors.columns[a], std::conj(vectors.data[a]));
-        std::sort(support[r].begin(), support[r].end(),
-                  [](const auto& x, const auto& y) { return x.first < y.first; });
-    }
-
-    std::vector<Complex> out(static_cast<std::size_t>(m) * m, Complex{0.0, 0.0});
-    for (int c = 0; c < m; ++c)
         for (int r = 0; r < m; ++r) {
             Complex sum{0.0, 0.0};
-            std::size_t a = 0, b = 0;
-            while (a < product[c].size() && b < support[r].size()) {
-                if (product[c][a].first < support[r][b].first) {
-                    ++a;
-                } else if (support[r][b].first < product[c][a].first) {
-                    ++b;
-                } else {
-                    sum += product[c][a].second * support[r][b].second;
-                    ++a;
-                    ++b;
-                }
-            }
+            for (int a = vectors.start[r]; a < vectors.start[r + 1]; ++a)
+                sum += std::conj(vectors.data[a]) * applied[vectors.columns[a]];
             out[static_cast<std::size_t>(r) + static_cast<std::size_t>(m) * c] = sum;
         }
+    }
     return out;
 }
 
