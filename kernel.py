@@ -268,6 +268,70 @@ def _compose(first, second, count: int) -> '_edkern.PhasedPermutation':
     return _edkern.PhasedPermutation(act, phase)
 
 
+def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
+            spin_flip: bool = False, threads: int = 0) -> dict:
+    '''
+    The lowest levels of every sector, one sector at a time.
+
+    Nothing but the eigenvalues is kept: the momentum basis, the sector
+    Hamiltonian and the block are built for one momentum, solved, and dropped
+    before the next one starts.  The parallel work is inside the sector
+    Hamiltonian, whose columns are independent, so the memory does not depend on
+    how many sectors the model has -- which is what makes a five-by-five lattice
+    a matter of time rather than of memory.
+
+    Args:
+        model: the model.
+        count: how many levels per sector.
+        sztot: total charge, or None for the whole space.
+        spin_flip: if True, resolve the spin-flip parity as well.
+        threads: workers for the sector Hamiltonian; 0 means one per core.
+    Returns:
+        A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
+    '''
+    require()
+    basis = basis_of(model, sztot)
+    terms = coupling_terms(model)
+    translations = globals()["translations"](model)
+    spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
+    out = {}
+    for k in model.tr_group.all_momenta():
+        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+        columns = _edkern.momentum_basis(basis, translations, characters)
+        columns_count = columns.columns()
+        if columns_count == 0:
+            continue
+        sector = _edkern.sector_hamiltonian(basis, terms, columns, threads)
+        little, _ = model.little_group(k)
+        ops = list(little)
+        if len(ops) == 1:
+            actions, irreps = [_identity_permutation(columns_count)], [('A', 1, [1.0 + 0.0j])]
+        else:
+            actions = [_edkern.sector_action(columns, basis,
+                                             monomial_of(model, model.hilbert[hilbert_index(model, op)]))
+                       for op in ops]
+            irreps = [(alpha, little.irrep_dim(alpha),
+                       [little.character(alpha, op) for op in ops])
+                      for alpha in little.all_irrps()]
+        flip = (_edkern.sector_action(columns, basis, spin) if spin_flip else None)
+        for alpha, dim, chars in irreps:
+            for s in ((None,) if not spin_flip else (1, -1)):
+                if s is None:
+                    use_actions, use_chars = actions, chars
+                else:
+                    use_actions = list(actions) + [_compose(action, flip, columns_count)
+                                                   for action in actions]
+                    use_chars = list(chars) + [value * s for value in chars]
+                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim, columns_count)
+                if vectors.vectors() == 0:
+                    continue
+                block = _edkern.block_matrix(sector, vectors)
+                asked = min(count, vectors.vectors())
+                out[(k, alpha, s)] = np.asarray(
+                    _edkern.lowest_eigenvalues(block, asked))
+    return out
+
+
 def sectors(model: 'Model', sztot: Optional[int] = None,
             spin_flip: bool = False) -> dict:
     '''

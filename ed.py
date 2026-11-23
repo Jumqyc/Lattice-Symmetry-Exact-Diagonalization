@@ -349,6 +349,39 @@ class Model:
         return {key: Sector(key=key, basis=basis, hamiltonian=block)
                 for key, (basis, block) in built.items()}
 
+    def spectra(self, Sztot: Optional[int] = None, count: int = 5,
+                spin_flip: bool = False, threads: int = 0
+                ) -> dict[SectorKey, NDArray[np.float64]]:
+        '''
+        Lowest levels of every sector, built and solved one sector at a time.
+
+        This is the method to use when what is wanted is the spectrum: it never
+        holds more than one sector's Hamiltonian and one block at a time, and it
+        parallelizes the construction of that one sector rather than the set of
+        them.
+
+        Args:
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            count: how many levels per sector.
+            spin_flip: If True, also resolve the spin-flip parity.
+            threads: workers for the sector Hamiltonian; 0 means one per core.
+        Returns:
+            A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
+        Raises:
+            ValueError: if *spin_flip* is asked for a charge sector the spin flip
+                does not preserve, or if the couplings are not closed under the
+                group.
+        '''
+        if spin_flip and Sztot is not None and \
+                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
+            raise ValueError(
+                "The spin flip maps sum(state) == Sztot onto "
+                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
+                "Sztot is self-conjugate.")
+        self.check_symmetry()
+        return kernel.spectra(self, count=count, sztot=Sztot, spin_flip=spin_flip,
+                              threads=threads)
+
     def check_symmetry(self) -> None:
         '''
         Check that the couplings are closed under the space group.

@@ -89,6 +89,7 @@ SectorVectors identity_vectors(int column_count);
  * @param basis the computational basis.
  * @param couplings the terms of the Hamiltonian.
  * @param columns the momentum-adapted basis.
+ * @param threads how many workers to use; 0 means one per hardware thread.
  * @detail ``B^T H B`` with the Hamiltonian applied term by term: ``H B`` is
  *         accumulated column by column from the images the terms produce, so the
  *         Hamiltonian never exists as a matrix.  The cost is
@@ -97,7 +98,7 @@ SectorVectors identity_vectors(int column_count);
  * @short The Hamiltonian in the momentum-adapted basis.
  */
 SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
-                                const SparseColumns& columns);
+                                const SparseColumns& columns, int threads = 0);
 
 /**
  * @param matrix the Hamiltonian of a sector, in the sector basis.

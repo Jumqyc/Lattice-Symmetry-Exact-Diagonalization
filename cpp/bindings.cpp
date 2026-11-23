@@ -86,7 +86,7 @@ PYBIND11_MODULE(_edkern, m)
           py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
     m.def("sector_hamiltonian", &ed::sector_hamiltonian,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
-          py::arg("couplings"), py::arg("columns"),
+          py::arg("couplings"), py::arg("columns"), py::arg("threads") = 0,
           "The Hamiltonian in a momentum-adapted basis, term by term");
     m.def("block_matrix", &ed::block_matrix,
           py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),

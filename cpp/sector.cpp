@@ -1,6 +1,7 @@
 #include "sector.h"
 
 #include "hamiltonian.h"
+#include "parallel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -175,7 +176,7 @@ SectorVectors identity_vectors(int column_count)
 }
 
 SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
-                                const SparseColumns& columns)
+                                const SparseColumns& columns, int threads)
 {
     const int n = basis.size();
     const int count = columns.columns();
@@ -197,68 +198,78 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
             weight_of[at] = columns.data[a];
         }
 
-    // Per output column, Y = H B is accumulated on the states: a scratch of the
-    // size of the basis with a stamp, reset through the touched list, so no
-    // dense fill and no sort.  The second scratch accumulates B^T Y over the
-    // columns of the sector.
-    std::vector<Complex> applied(static_cast<std::size_t>(n), Complex{0.0, 0.0});
-    std::vector<int> state_stamp(static_cast<std::size_t>(n), -1);
-    std::vector<int> state_touched;
-    std::vector<Complex> summed(static_cast<std::size_t>(count), Complex{0.0, 0.0});
-    std::vector<int> column_stamp(static_cast<std::size_t>(count), -1);
-    std::vector<int> column_touched;
-    std::vector<std::pair<int, Complex>> images;
-
-    SparseMatrix by_column;
-    by_column.rows = count;
-    by_column.cols = count;
-    by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
     // the terms are read into their tables once: the application below is then a
     // lookup per site instead of a search through the local operator
     std::vector<PreparedTerm> prepared;
     prepared.reserve(couplings.size());
     for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
 
-    std::vector<int> digits;                        // reused across the whole product
+    // One column of the product: Y = H B is accumulated on the states with a
+    // scratch of the size of the basis and a stamp, reset through the touched
+    // list, so no dense fill and no sort; the second scratch accumulates B^T Y
+    // over the columns of the sector.  The loop over the columns is the parallel
+    // one: every worker builds its own scratch and writes only its own columns.
+    std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(count));
+    parallel_ranges(count, [&](int begin, int end) {
+        std::vector<Complex> applied(static_cast<std::size_t>(n), Complex{0.0, 0.0});
+        std::vector<int> state_stamp(static_cast<std::size_t>(n), -1);
+        std::vector<int> state_touched;
+        std::vector<Complex> summed(static_cast<std::size_t>(count), Complex{0.0, 0.0});
+        std::vector<int> column_stamp(static_cast<std::size_t>(count), -1);
+        std::vector<int> column_touched;
+        std::vector<std::pair<int, Complex>> images;
+        std::vector<int> digits;
+        for (int c = begin; c < end; ++c) {
+            state_touched.clear();
+            for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
+                const int state = columns.indices[a];
+                const Complex weight = columns.data[a];
+                basis.unpack_into(basis.state(state), digits);
+                images.clear();
+                for (const PreparedTerm& term : prepared)
+                    apply_prepared(basis, term, basis.state(state), digits, images);
+                for (const auto& entry : images) {
+                    const int image = entry.first;
+                    if (state_stamp[image] != c) {
+                        state_stamp[image] = c;
+                        applied[image] = Complex{0.0, 0.0};
+                        state_touched.push_back(image);
+                    }
+                    applied[image] += weight * entry.second;
+                }
+            }
+            column_touched.clear();
+            for (const int state : state_touched) {
+                const Complex value = applied[state];
+                if (std::abs(value) < 1e-14) continue;
+                for (int t = start[state]; t < start[state + 1]; ++t) {
+                    const int column = column_of[t];
+                    if (column_stamp[column] != c) {
+                        column_stamp[column] = c;
+                        summed[column] = Complex{0.0, 0.0};
+                        column_touched.push_back(column);
+                    }
+                    summed[column] += std::conj(weight_of[t]) * value;
+                }
+            }
+            std::sort(column_touched.begin(), column_touched.end());
+            std::vector<std::pair<int, Complex>>& column = produced[c];
+            for (const int target : column_touched) {
+                const Complex value = summed[target];
+                if (std::abs(value) < 1e-14) continue;
+                column.emplace_back(target, value);
+            }
+        }
+    }, threads);
+
+    SparseMatrix by_column;
+    by_column.rows = count;
+    by_column.cols = count;
+    by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
     for (int c = 0; c < count; ++c) {
-        state_touched.clear();
-        for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
-            const int state = columns.indices[a];
-            const Complex weight = columns.data[a];
-            basis.unpack_into(basis.state(state), digits);
-            images.clear();
-            for (const PreparedTerm& term : prepared)
-                apply_prepared(basis, term, basis.state(state), digits, images);
-            for (const auto& entry : images) {
-                const int image = entry.first;
-                if (state_stamp[image] != c) {
-                    state_stamp[image] = c;
-                    applied[image] = Complex{0.0, 0.0};
-                    state_touched.push_back(image);
-                }
-                applied[image] += weight * entry.second;
-            }
-        }
-        column_touched.clear();
-        for (const int state : state_touched) {
-            const Complex value = applied[state];
-            if (std::abs(value) < 1e-14) continue;
-            for (int t = start[state]; t < start[state + 1]; ++t) {
-                const int column = column_of[t];
-                if (column_stamp[column] != c) {
-                    column_stamp[column] = c;
-                    summed[column] = Complex{0.0, 0.0};
-                    column_touched.push_back(column);
-                }
-                summed[column] += std::conj(weight_of[t]) * value;
-            }
-        }
-        std::sort(column_touched.begin(), column_touched.end());
-        for (const int column : column_touched) {
-            const Complex value = summed[column];
-            if (std::abs(value) < 1e-14) continue;
-            by_column.indices.push_back(column);
-            by_column.data.push_back(value);
+        for (const auto& entry : produced[c]) {
+            by_column.indices.push_back(entry.first);
+            by_column.data.push_back(entry.second);
         }
         by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
     }
