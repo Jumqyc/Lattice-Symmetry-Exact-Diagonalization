@@ -108,8 +108,14 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
         }
 
     // fast path: H is already invariant, which is the case whenever the
-    // couplings respect the symmetry; averaging it would return it anyway
+    // couplings respect the symmetry; averaging it would return it anyway.
+    // The check walks every entry once per group element and marks the columns
+    // of the target row with a stamp: the images of a sorted row are not sorted,
+    // so a merge walk would not do, and scanning the target row per entry costs
+    // a factor equal to the number of nonzeros per row.
     bool invariant = true;
+    std::vector<int> stamp(static_cast<std::size_t>(n), -1);
+    int colour = 0;
     for (int g = 0; g < groups && invariant; ++g) {
         for (int i = 0; i < n && invariant; ++i) {
             const int source = image[g][i];
@@ -119,13 +125,11 @@ SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
                 invariant = false;
                 break;
             }
+            ++colour;
+            for (int b = from; b < stop; ++b) stamp[matrix.indices[b]] = colour;
             for (int a = begin; a < end; ++a) {
                 // the image of the entry (i, column) sits at (image[i], image[column])
-                const int target = image[g][matrix.indices[a]];
-                bool found = false;
-                for (int b = from; b < stop && !found; ++b)
-                    found = (matrix.indices[b] == target);
-                if (!found) {
+                if (stamp[image[g][matrix.indices[a]]] != colour) {
                     invariant = false;
                     break;
                 }

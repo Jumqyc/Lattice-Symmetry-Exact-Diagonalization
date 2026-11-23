@@ -613,7 +613,7 @@ With $V$ the orthonormal basis of the $\alpha$-isotypic component, the block is
 \end{equation}
 Both factors are sparse and every vector of $V$ lives on one orbit, so the block
 comes out sparse as well: for the models in Section~\ref{sec:checks} it holds
-between $0.3\%$ and $4\%$ of its dense entries. It is never assembled densely,
+between $0.3\%$ and $16\%$ of its dense entries, the larger lattices being the It is never assembled densely,
 and it is diagonalized without being assembled densely either
 (Section~\ref{sec:algorithm}).
 Since $[H,U(R)] = 0$ and $\Pi_\alpha$ is a projector onto an invariant subspace,
@@ -764,6 +764,9 @@ and the two diagonals of the tridiagonal are all that is kept. The Ritz values
 come from bisection on the inertia count of $T - x$, and the residual of a Ritz
 pair from the last component of its eigenvector, which inverse iteration on the
 tridiagonal supplies; no matrix of the size of the recurrence is formed either.
+Since every step costs more than the one before it, the residual is tested as
+the run goes and the recurrence stops as soon as the requested values have
+converged.
 Two properties of this step decide how it is used. A single-vector recursion
 resolves distinct levels only, so a degenerate multiplet contributes one Ritz
 value and not one per copy; and an unconverged Ritz value is a number between two
@@ -780,8 +783,9 @@ of the little group. Neither grows with the block dimension. What grows is
 step~9: the recurrence is the only part of the procedure whose cost scales
 faster than the number of nonzeros, and it dominates for any lattice on which the
 method is worth using. With full reorthogonalization its cost is
-$\mathcal{O}(m^{2}b)$ for $m$ steps and a block of $b$ columns, which is why a
-restarted recurrence -- keeping a working set instead of every vector -- is the
+$\mathcal{O}(m^{2}b)$ for $m$ steps and a block of $b$ columns, which is why it is
+run only as long as the residual requires, and why a restarted recurrence --
+keeping a working set instead of every vector -- is the
 next thing to reach for once the blocks pass a few thousand columns.
 
 \section{Numerical checks}\label{sec:checks}
@@ -841,17 +845,17 @@ $\omega_\rho(\mu)$; then
 model & $|\Glatt|$ & states & sectors & largest & nnz of the & time \\
  & & & & block & blocks (\% of dense) & \\
 \midrule
-$3\times3$ square $D_4$, full space & 72 & 512 & 21 & 38 & 1\,952 (13\%) & 16\,ms \\
-$3\times3$ triangular $D_6$, full space & 108 & 512 & 23 & 38 & 2\,376 (16\%) & 25\,ms \\
-$4\times4$ square $D_4$, half filling & 128 & 12\,870 & 42 & 436 & 189\,922 (4.1\%) & 1.5\,s \\
+$3\times3$ square $D_4$, full space & 72 & 512 & 21 & 38 & 1\,952 (13\%) & 14\,ms \\
+$3\times3$ triangular $D_6$, full space & 108 & 512 & 23 & 38 & 2\,376 (16\%) & 20\,ms \\
+$4\times4$ square $D_4$, half filling & 128 & 12\,870 & 42 & 436 & 189\,922 (4.1\%) & 0.52\,s \\
 \bottomrule
 \end{tabular}
 \caption{Sizes and timings for three Heisenberg models, from the assembly of the
 Hamiltonian to the four lowest levels of every block, on one core. The blocks are
 sparse: the last column before the time gives their total number of nonzeros
 against what the same blocks would hold if they were stored densely. For the
-$4\times4$ model, $0.51\,$s is the Hamiltonian, $0.14\,$s the momentum sectors and
-the blocks, and $0.88\,$s the Lanczos recurrence; no dense matrix of the size of a
+$4\times4$ model, $0.21\,$s is the Hamiltonian, $0.16\,$s the momentum sectors and
+the blocks, and $0.15\,$s the Lanczos recurrence; no dense matrix of the size of a
 sector is ever formed.}
 \label{tab:sizes}
 \end{table}

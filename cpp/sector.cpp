@@ -50,18 +50,20 @@ std::vector<std::vector<int>> column_orbits(const std::vector<PhasedPermutation>
 /**
  * @param alpha diagonal of the tridiagonal Lanczos matrix.
  * @param beta subdiagonal; ``beta[i]`` joins step ``i`` and step ``i+1``.
+ * @param steps how many leading entries of the two diagonals form the matrix.
  * @param x the shift.
  * @detail The number of negative pivots of the LDL^T factor of ``T - x`` equals
  *         the number of eigenvalues below ``x`` (Sylvester's law of inertia).
  *         Only the two diagonals are touched, so no matrix is formed.
  * @short How many eigenvalues of the tridiagonal lie below ``x``.
  */
-int count_below(const std::vector<double>& alpha, const std::vector<double>& beta, double x)
+int count_below(const std::vector<double>& alpha, const std::vector<double>& beta,
+                int steps, double x)
 {
     int below = 0;
     double pivot = alpha[0] - x;
     if (pivot < 0.0) ++below;
-    for (std::size_t i = 1; i < alpha.size(); ++i) {
+    for (int i = 1; i < steps; ++i) {
         // a vanishing pivot is a shift sitting on an eigenvalue; nudging it off
         // keeps the inertia count, which is what the bisection uses
         if (std::abs(pivot) < 1e-300) pivot = 1e-300;
@@ -74,6 +76,7 @@ int count_below(const std::vector<double>& alpha, const std::vector<double>& bet
 /**
  * @param alpha diagonal of the tridiagonal matrix.
  * @param beta subdiagonal.
+ * @param steps how many leading entries form the matrix.
  * @param theta an eigenvalue of the tridiagonal.
  * @detail The last component of the eigenvector is what the Ritz residual needs.
  *         It comes from a few steps of inverse iteration with the LDL^T
@@ -84,9 +87,8 @@ int count_below(const std::vector<double>& alpha, const std::vector<double>& bet
  * @short Last component of the normalized eigenvector of the tridiagonal.
  */
 double last_component(const std::vector<double>& alpha, const std::vector<double>& beta,
-                      double theta)
+                      int steps, double theta)
 {
-    const int steps = static_cast<int>(alpha.size());
     if (steps == 1) return 1.0;
     const double shift = 1e-12 * (1.0 + std::abs(theta));
     std::vector<double> diagonal(static_cast<std::size_t>(steps));
@@ -118,6 +120,68 @@ double last_component(const std::vector<double>& alpha, const std::vector<double
         previous = vector;
     }
     return std::abs(vector[steps - 1]);
+}
+
+/**
+ * @param alpha diagonal of the tridiagonal, length at least *steps*.
+ * @param beta subdiagonal, length at least *steps* - 1.
+ * @param steps length of the tridiagonal.
+ * @param count how many of the lowest eigenvalues are wanted.
+ * @detail Bisection on the inertia count: the tridiagonal is never stored, let
+ *         alone diagonalized as a dense matrix.
+ * @short The lowest eigenvalues of the tridiagonal, ascending.
+ */
+std::vector<double> ritz_values(const std::vector<double>& alpha,
+                                const std::vector<double>& beta, int steps, int count)
+{
+    // Spectral bounds from the Gershgorin discs.  Every row has two off-diagonal
+    // entries except the first and the last, so the bound is the row sum and not
+    // a single beta: a bracket that cuts off the two lowest levels makes the
+    // bisection converge to the edge of the bracket and report a value that is
+    // not an eigenvalue at all.
+    double low = alpha[0] - (steps > 1 ? std::abs(beta[0]) : 0.0);
+    double high = alpha[steps - 1] + (steps > 1 ? std::abs(beta[steps - 2]) : 0.0);
+    for (int i = 0; i < steps; ++i) {
+        const double left = i > 0 ? std::abs(beta[i - 1]) : 0.0;
+        const double right = i + 1 < steps ? std::abs(beta[i]) : 0.0;
+        low = std::min(low, alpha[i] - left - right);
+        high = std::max(high, alpha[i] + left + right);
+    }
+    const double resolution = (high - low) * 1e-15;
+    std::vector<double> out(static_cast<std::size_t>(count), 0.0);
+    for (int j = 0; j < count; ++j) {
+        double left = low;
+        double right = high;
+        for (int iteration = 0; iteration < 200 && (right - left) > resolution; ++iteration) {
+            const double middle = 0.5 * (left + right);
+            if (count_below(alpha, beta, steps, middle) > j) right = middle;
+            else left = middle;
+        }
+        out[j] = 0.5 * (left + right);
+    }
+    return out;
+}
+
+/**
+ * @param alpha diagonal of the tridiagonal.
+ * @param beta subdiagonal.
+ * @param steps length of the tridiagonal.
+ * @param beta_end the off-diagonal that would connect the last step to the next.
+ * @param values the Ritz values to test.
+ * @param tolerance residual threshold, relative to the magnitude of the value.
+ * @detail The residual of a Ritz pair is the first neglected off-diagonal times
+ *         the last component of its tridiagonal eigenvector.
+ * @short Whether every requested Ritz value is converged.
+ */
+bool converged(const std::vector<double>& alpha, const std::vector<double>& beta,
+               int steps, double beta_end, const std::vector<double>& values,
+               double tolerance)
+{
+    for (const double value : values) {
+        const double residual = beta_end * last_component(alpha, beta, steps, value);
+        if (residual > tolerance * std::max(1.0, std::abs(value))) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -281,8 +345,8 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
     by_column.rows = count;
     by_column.cols = count;
     by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
-    std::vector<Complex> row(count);
     std::vector<std::pair<int, Complex>> product;   // H B, column c: (state row, value)
+    std::vector<std::pair<int, Complex>> terms;     // B^T H B, column c: (sector row, value)
     for (int c = 0; c < count; ++c) {
         // Y = H B, column c
         product.clear();
@@ -292,16 +356,28 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
             for (int b = hamiltonian_t.indptr[state]; b < hamiltonian_t.indptr[state + 1]; ++b)
                 product.emplace_back(hamiltonian_t.indices[b], hamiltonian_t.data[b] * weight);
         }
-        // B^T Y, column c
-        std::fill(row.begin(), row.end(), Complex{0.0, 0.0});
-        for (const auto& entry : product) {
+        // B^T Y, column c: the entries are accumulated in a list and merged,
+        // never scattered into a vector of the size of the sector, which would
+        // make the cost of this loop quadratic in the sector dimension
+        terms.clear();
+        for (const auto& entry : product)
             for (int b = columns_t.indptr[entry.first]; b < columns_t.indptr[entry.first + 1]; ++b)
-                row[columns_t.indices[b]] += std::conj(columns_t.data[b]) * entry.second;
-        }
-        for (int r = 0; r < count; ++r) {
-            if (std::abs(row[r]) < 1e-14) continue;
-            by_column.indices.push_back(r);
-            by_column.data.push_back(row[r]);
+                terms.emplace_back(columns_t.indices[b],
+                                   std::conj(columns_t.data[b]) * entry.second);
+        std::sort(terms.begin(), terms.end(),
+                  [](const auto& left, const auto& right) { return left.first < right.first; });
+        for (std::size_t i = 0; i < terms.size();) {
+            const int row = terms[i].first;
+            Complex sum{0.0, 0.0};
+            std::size_t j = i;
+            while (j < terms.size() && terms[j].first == row) {
+                sum += terms[j].second;
+                ++j;
+            }
+            i = j;
+            if (std::abs(sum) < 1e-14) continue;
+            by_column.indices.push_back(row);
+            by_column.data.push_back(sum);
         }
         by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
     }
@@ -393,6 +469,11 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
     // with as many steps as the dimension the recurrence spans the whole space
     // and the Ritz values are exact; fewer steps give the usual approximation
     const int steps_max = std::min(iterations, n);
+    // every step costs more than the one before it, because the recurrence is
+    // reorthogonalized against all the vectors it already has, so the residual
+    // is tested as the run goes and the recurrence stops as soon as it is
+    // converged
+    const int check_every = 20;
 
     // deterministic pseudo-random start: a constant vector can be orthogonal to
     // a whole degenerate multiplet, which would hide it from the recurrence
@@ -414,6 +495,8 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
     std::vector<Complex> previous(static_cast<std::size_t>(n), Complex{0.0, 0.0});
     double beta_previous = 0.0;
     double beta_end = 0.0;
+    std::vector<double> out;
+    bool done = false;
     int steps = 0;
     for (int step = 0; step < steps_max; ++step) {
         basis.push_back(current);
@@ -439,55 +522,26 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
         beta_value = std::sqrt(beta_value);
         ++steps;
         beta_end = beta_value;
-        if (beta_value < tolerance || step + 1 == steps_max) break;
+        if (beta_value < tolerance) {
+            // the Krylov space is invariant: the Ritz values are exact
+            done = true;
+        } else if (steps >= check_every && steps % check_every == 0) {
+            out = ritz_values(alpha, beta, steps, count);
+            done = converged(alpha, beta, steps, beta_end, out, tolerance);
+        }
+        if (done || step + 1 == steps_max) break;
         previous = std::move(current);
         beta_previous = beta_value;
         current = std::move(next);
         for (auto& value : current) value /= beta_value;
     }
-    alpha.resize(steps);
-    if (steps > 1) beta.resize(steps - 1);
+    if (out.empty()) out = ritz_values(alpha, beta, steps, count);
 
-    // Spectral bounds from the Gershgorin discs of the tridiagonal.  Every row
-    // has two off-diagonal entries except the first and the last, so the bound
-    // is the row sum and not a single beta: a bracket that cuts off the two
-    // lowest levels makes the bisection converge to the edge of the bracket and
-    // report a value that is not an eigenvalue at all.
-    double low = alpha[0] - std::abs(beta.empty() ? 0.0 : beta[0]);
-    double high = alpha[steps - 1] + (steps > 1 ? std::abs(beta[steps - 2]) : 0.0);
-    for (int i = 0; i < steps; ++i) {
-        const double left = i > 0 ? std::abs(beta[i - 1]) : 0.0;
-        const double right = i + 1 < steps ? std::abs(beta[i]) : 0.0;
-        low = std::min(low, alpha[i] - left - right);
-        high = std::max(high, alpha[i] + left + right);
-    }
-    const double resolution = (high - low) * 1e-15;
-
-    // the lowest Ritz values, by bisection on the inertia count: the tridiagonal
-    // is never stored, let alone diagonalised as a dense matrix
-    std::vector<double> out(static_cast<std::size_t>(count), 0.0);
-    for (int j = 0; j < count; ++j) {
-        double left = low;
-        double right = high;
-        for (int iteration = 0; iteration < 200 && (right - left) > resolution; ++iteration) {
-            const double middle = 0.5 * (left + right);
-            if (count_below(alpha, beta, middle) > j) right = middle;
-            else left = middle;
-        }
-        out[j] = 0.5 * (left + right);
-    }
-
-    // A Ritz value is only an eigenvalue once its residual is small; the tail of
-    // an unconverged recurrence produces numbers that lie between true levels
-    // and are eigenvalues of nothing.  The residual of a Ritz pair is the last
-    // component of its tridiagonal eigenvector times the first neglected
-    // off-diagonal, so it costs one pass over the recurrence.
-    for (int j = 0; j < count; ++j) {
-        const double residual = beta_end * last_component(alpha, beta, out[j]);
-        if (residual > tolerance * std::max(1.0, std::abs(out[j])))
-            throw std::runtime_error(
-                "Lanczos did not converge: raise the number of iterations");
-    }
+    // a Ritz value is only an eigenvalue once its residual is small: the tail of
+    // an unconverged recurrence produces numbers that lie between true levels and
+    // are eigenvalues of nothing, and the caller is told rather than handed one
+    if (!converged(alpha, beta, steps, beta_end, out, tolerance))
+        throw std::runtime_error("Lanczos did not converge: raise the number of iterations");
     return out;
 }
 
