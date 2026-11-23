@@ -86,29 +86,15 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
 SectorVectors identity_vectors(int column_count);
 
 /**
- * @param hamiltonian the Hamiltonian in the computational basis.
- * @param columns the momentum-adapted basis.
- * @detail ``B^T H B``, assembled in CSR form without ever forming a dense
- *         matrix of the size of the sector: the product is taken column by
- *         column, so the cost is the number of non-zeros of ``H B`` times the
- *         number of non-zeros of the column of ``B``.
- * @short The Hamiltonian in the momentum-adapted basis.
- */
-SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseColumns& columns);
-
-/**
  * @param basis the computational basis.
  * @param couplings the terms of the Hamiltonian.
  * @param columns the momentum-adapted basis.
- * @detail The same product as below, with the Hamiltonian applied term by term
- *         instead of read from a stored matrix: ``H B`` is accumulated column by
- *         column from the images the terms produce, and the states are never
- *         materialized as a matrix over the whole space.  The cost is
- *         ``#states * #terms`` per sector instead of a walk over the nonzeros of
- *         a stored Hamiltonian, which is the same order and one pass more often;
- *         the memory is the size of the basis instead of the size of the
- *         Hamiltonian, which is what makes a five-by-five lattice possible.
- * @short ``B^T H B`` without assembling ``H``.
+ * @detail ``B^T H B`` with the Hamiltonian applied term by term: ``H B`` is
+ *         accumulated column by column from the images the terms produce, so the
+ *         Hamiltonian never exists as a matrix.  The cost is
+ *         ``#states * #terms`` per sector; the memory is the size of the basis,
+ *         which is what makes a five-by-five lattice possible at all.
+ * @short The Hamiltonian in the momentum-adapted basis.
  */
 SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
                                 const SparseColumns& columns);

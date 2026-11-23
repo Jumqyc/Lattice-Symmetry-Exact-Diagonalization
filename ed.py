@@ -344,9 +344,43 @@ class Model:
                 "The spin flip maps sum(state) == Sztot onto "
                 "L(d-1) - Sztot; it is a symmetry of a single sector only when "
                 "Sztot is self-conjugate.")
+        self.check_symmetry()
         built = kernel.sectors(self, Sztot, spin_flip)
         return {key: Sector(key=key, basis=basis, hamiltonian=block)
                 for key, (basis, block) in built.items()}
+
+    def check_symmetry(self) -> None:
+        '''
+        Check that the couplings are closed under the space group.
+
+        The decomposition projects the Hamiltonian onto the sectors of the group,
+        which is only meaningful when the Hamiltonian commutes with the group.
+        The couplings are the Hamiltonian, so what has to hold is that the image
+        of every coupling is again a coupling of the model -- with the same local
+        operators, which is not checked here: the site pattern is what the
+        decomposition depends on, and it is what goes wrong in practice (a bond
+        list that looks periodic but misses the bonds that close the torus).
+
+        Raises:
+            ValueError: if the image of a coupling is not a coupling.
+        '''
+        known = {frozenset(coupling.sites) for coupling in self.couplings}
+        for t in self.tr_group:
+            translation = self._translation_perm(t)
+            for index in range(len(self.hilbert)):
+                action = self.hilbert[index].after_translation(translation)
+                # the stored permutation is the preimage map, so the image of a
+                # site is where that map sends its value
+                image = np.argsort(action.site.perm)
+                for coupling in self.couplings:
+                    moved = frozenset(int(image[site]) for site in coupling.sites)
+                    if moved not in known:
+                        raise ValueError(
+                            "The couplings are not invariant under the space group: the "
+                            f"coupling on sites {sorted(coupling.sites)} is mapped onto "
+                            f"{sorted(moved)}, which is not a coupling of the model. "
+                            "The sector decomposition would project a Hamiltonian that "
+                            "does not commute with the group.")
 
     def _action_for(self, op: np.ndarray) -> MonomialAction:
         '''

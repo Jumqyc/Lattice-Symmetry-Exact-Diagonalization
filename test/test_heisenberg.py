@@ -60,7 +60,7 @@ def momentum_spectrum(model: Model, sztot=None) -> np.ndarray:
         The eigenvalues, ascending.
     '''
     basis = kernel.basis_of(model, sztot)
-    hamiltonian = _edkern.assemble(basis, kernel.coupling_terms(model))
+    terms = kernel.coupling_terms(model)
     translations = kernel.translations(model)
     values = []
     for k in model.tr_group.all_momenta():
@@ -68,7 +68,7 @@ def momentum_spectrum(model: Model, sztot=None) -> np.ndarray:
         columns = _edkern.momentum_basis(basis, translations, characters)
         if columns.columns() == 0:
             continue
-        sector = _edkern.sector_hamiltonian(hamiltonian, columns)
+        sector = _edkern.sector_hamiltonian(basis, terms, columns)
         values.append(np.linalg.eigvalsh(kernel.to_scipy(sector).toarray()))
     return np.sort(np.concatenate(values))
 

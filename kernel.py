@@ -131,26 +131,6 @@ def translations(model: 'Model') -> list:
             for t in model.tr_group]
 
 
-def group_actions(model: 'Model') -> list:
-    '''
-    The whole space group, one kernel action per element.
-
-    Args:
-        model: the model.
-    Returns:
-        Every composition of a translation with a point-group action.  The
-        symmetrisation averages over all of them, so the kernel needs the
-        composed elements and not the generators.
-    '''
-    require()
-    out = []
-    for t in model.tr_group:
-        translation = model._translation_perm(t)
-        for index in range(len(model.hilbert)):
-            out.append(monomial_of(model, model.hilbert[index].after_translation(translation)))
-    return out
-
-
 def hilbert_index(model: 'Model', op) -> int:
     '''
     Index of the point-group action that belongs to an operation matrix.
@@ -272,10 +252,8 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
         Hamiltonian between them.
     '''
     require()
-    states = model.size_of_unit_cell
     basis = basis_of(model, sztot)
-    hamiltonian = _edkern.symmetrise(_edkern.assemble(basis, coupling_terms(model)),
-                                     basis, group_actions(model))
+    terms = coupling_terms(model)
     translations = globals()["translations"](model)
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
@@ -285,7 +263,7 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
         count = columns.columns()
         if count == 0:
             continue
-        sector = _edkern.sector_hamiltonian(hamiltonian, columns)
+        sector = _edkern.sector_hamiltonian(basis, terms, columns)
         little, _ = model.little_group(k)
         ops = list(little)
         identity = _identity_permutation(count)

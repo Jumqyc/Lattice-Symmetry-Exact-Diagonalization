@@ -48,33 +48,6 @@ void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word
                 const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out);
 
 /**
- * @param basis the computational basis.
- * @param couplings the terms of the Hamiltonian.
- * @detail Every state is walked once and every term is applied to it, so the
- *         cost is ``#states * #terms`` and the result is assembled in CSR form
- *         directly.
- * @short The Hamiltonian in the computational basis.
- */
-SparseMatrix assemble(const Basis& basis, const std::vector<CouplingTerm>& couplings);
-
-/**
- * @param matrix the Hamiltonian to average over the group.
- * @param basis the computational basis.
- * @param actions one action per group element, translations included.
- * @detail The result is ``(1/|G|) sum_g U(g) H U(g)^-1``, i.e. the projector
- *         onto the operators that commute with the group.  The invariant case --
- *         every coupling already respecting the symmetry, which is the usual one
- *         -- is detected first and returns the input untouched, because
- *         averaging a matrix that is already symmetric is a waste of a factor
- *         of |G| and, more importantly, an unchanged H is the honest outcome:
- *         silently averaging a non-invariant Hamiltonian would change the
- *         physics without saying so.
- * @short Symmetric part of the Hamiltonian.
- */
-SparseMatrix symmetrise(const SparseMatrix& matrix, const Basis& basis,
-                        const std::vector<MonomialAction>& actions);
-
-/**
  * @param matrix a matrix in CSR form.
  * @detail The transposed matrix, also in CSR form; the sector assembly needs to
  *         walk columns as easily as rows.

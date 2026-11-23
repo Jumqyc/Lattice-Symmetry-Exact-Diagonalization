@@ -149,89 +149,36 @@ def to_scipy(matrix) -> csr_matrix:
 
 # ── the checks ────────────────────────────────────────────────────────────────
 
-def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
-    '''The assembled Hamiltonian equals the dense one, and respects the group.'''
-    basis = cxx_basis(model, Sztot)
-    couplings = cxx_couplings(model)
-    actions = cxx_group_actions(model)
-    raw = _edkern.assemble(basis, couplings)
-    kernel = _edkern.symmetrise(raw, basis, actions)
-    dense = csr_matrix(reference.hamiltonian(model, Sztot))
-    difference = abs(to_scipy(kernel) - dense).max() if kernel.nonzeros() else 0.0
-    # the couplings are supposed to respect the group, so averaging must be a
-    # no-op; if it is not, the fixture is not the model its label claims
-    drift = abs(to_scipy(kernel) - to_scipy(raw)).max() if raw.nonzeros() else 0.0
-    ok = difference < 1e-12 and drift < 1e-12
-    if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} H: {kernel.nonzeros()} non-zeros, "
-              f"max difference {difference:.1e}, symmetrisation drift {drift:.1e}")
-    return ok
-
-
-def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-12,
+def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
                       verbose: bool = True) -> bool:
     '''
-    The sector Hamiltonian built from the couplings agrees with the stored one.
+    The sector Hamiltonians built from the couplings are the restriction of H.
 
-    The library path never assembles the Hamiltonian: it applies the terms to
-    the columns of the momentum basis directly.  This compares that product with
-    the same object built from a stored matrix, sector by sector.
+    The Hamiltonian never exists as a matrix, so the product is compared with
+    ``B^T H B`` formed here, densely, from the reference Hamiltonian written out
+    in the test.
     '''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
     translations = [cxx_translation(model, t) for t in model.tr_group]
-    stored = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis,
-                                cxx_group_actions(model))
+    dense = reference.hamiltonian(model, Sztot)
     worst = 0.0
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
         columns = _edkern.momentum_basis(basis, translations, characters)
         if columns.columns() == 0:
             continue
-        from_matrix = to_scipy(_edkern.sector_hamiltonian(stored, columns))
-        from_terms = to_scipy(_edkern.sector_hamiltonian(basis, couplings, columns))
-        worst = max(worst, float(abs(from_matrix - from_terms).max()))
+        basis_matrix = np.zeros((basis.size(), columns.columns()), dtype=complex)
+        for c in range(columns.columns()):
+            for a in range(columns.indptr[c], columns.indptr[c + 1]):
+                basis_matrix[columns.indices[a], c] = columns.data[a]
+        projected = basis_matrix.conj().T @ dense @ basis_matrix
+        from_terms = to_scipy(_edkern.sector_hamiltonian(basis, couplings, columns)).toarray()
+        worst = max(worst, float(np.max(np.abs(from_terms - projected))))
     ok = worst < tol
     if verbose:
         print(f"  {'✓' if ok else 'FAIL'}  {label} term-by-term: sector Hamiltonians from "
               f"the couplings, max difference {worst:.1e}")
-    return ok
-
-
-def test_symmetrise(model: Model, Sztot, label: str, tol: float = 1e-12,
-                    verbose: bool = True) -> bool:
-    '''
-    The averaging path of ``symmetrise``, which the invariant models never reach.
-
-    A Hamiltonian built from a single bond is not invariant, so the fast path
-    rejects it and the average over the group is taken.  What comes out has to be
-    invariant, and it has to be the average ``(1/|G|) sum_g U(g) H U(g)^T`` that
-    the test forms densely from the group actions.
-    '''
-    basis = cxx_basis(model, Sztot)
-    couplings = cxx_couplings(model)
-    actions = cxx_group_actions(model)
-    one_term = _edkern.assemble(basis, couplings[:1])
-    averaged = _edkern.symmetrise(one_term, basis, actions)
-    # symmetrising the result again must change nothing
-    again = _edkern.symmetrise(averaged, basis, actions)
-    idempotent = abs(to_scipy(again) - to_scipy(averaged)).max() if averaged.nonzeros() else 0.0
-
-    n = basis.size()
-    dense = to_scipy(one_term).toarray()
-    total = np.zeros((n, n), dtype=complex)
-    for action in actions:
-        permutation = np.zeros((n, n), dtype=complex)
-        for i in range(n):
-            moved, phase = _edkern.apply(basis, action, basis.state(i))
-            permutation[basis.index(moved), i] = phase
-        total += permutation @ dense @ permutation.conj().T
-    total /= len(actions)
-    difference = float(np.max(np.abs(to_scipy(averaged).toarray() - total))) if n else 0.0
-    ok = idempotent < tol and difference < 1e-10
-    if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} symmetrise: averaging a one-bond term, "
-              f"idempotent {idempotent:.1e}, matches the dense average {difference:.1e}")
     return ok
 
 
@@ -240,8 +187,6 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
     '''Block matrices, their dimensions and the union of their spectra.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
-    actions = cxx_group_actions(model)
-    hamiltonian = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis, actions)
     dense = reference.spectrum(reference.hamiltonian(model, Sztot))
     translations = [cxx_translation(model, t) for t in model.tr_group]
 
@@ -252,7 +197,7 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
         columns = _edkern.momentum_basis(basis, translations, characters)
         if columns.columns() == 0:
             continue
-        sector_hamiltonian = _edkern.sector_hamiltonian(hamiltonian, columns)
+        sector_hamiltonian = _edkern.sector_hamiltonian(basis, couplings, columns)
         little_group, _ = model.little_group(k)
         ops = list(little_group)
         if len(ops) == 1:
@@ -298,13 +243,11 @@ def test_lanczos(model: Model, Sztot, label: str, tol: float = 1e-8,
     '''Lanczos reproduces the lowest dense eigenvalues of a sector Hamiltonian.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
-    actions = cxx_group_actions(model)
-    hamiltonian = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis, actions)
     translations = [cxx_translation(model, t) for t in model.tr_group]
     k = model.tr_group.all_momenta()[0]
     characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
     columns = _edkern.momentum_basis(basis, translations, characters)
-    sector_hamiltonian = _edkern.sector_hamiltonian(hamiltonian, columns)
+    sector_hamiltonian = _edkern.sector_hamiltonian(basis, couplings, columns)
     dense = np.sort(np.linalg.eigvalsh(to_scipy(sector_hamiltonian).toarray()))
     # a single-vector recursion resolves distinct levels only, so compare
     # against the distinct part of the dense spectrum
@@ -350,8 +293,6 @@ def main():
                                    lambda: heisenberg(3, twod.D6(), T1, T2), None)]:
         model = builder()
         print(f'── {label} ──')
-        test_hamiltonian(model, sztot, label)
-        test_symmetrise(model, sztot, label)
         test_term_by_term(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
