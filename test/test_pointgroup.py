@@ -33,6 +33,12 @@ from itertools import product
 import numpy as np
 
 twod = importlib.import_module('geometry.2dsym')
+try:
+    import _edkern
+except ImportError:                          # pragma: no cover
+    _edkern = None
+import kernel
+import reference
 from ed import Coupling, Model
 from hilbert_action import circle_doublet
 from lattice_action import AffineAction, label_action
@@ -185,7 +191,7 @@ def test_sector_spectra(verbose: bool = True, tol: float = 1e-9) -> bool:
     ok = True
     for label, N1, N2, pg, a1, a2 in CASES:
         m = heisenberg(N1, N2, pg, a1, a2)
-        direct = np.sort(np.linalg.eigvalsh(m._build_H_sym().toarray()))
+        direct = np.sort(reference.spectrum(reference.hamiltonian(m)))
         n_states = len(direct)
         for spin_flip in (False, True):
             sectors = m.build_sectors(spin_flip=spin_flip)
@@ -215,7 +221,8 @@ def test_sector_labels(tol: float = 1e-8, verbose: bool = True) -> bool:
     ok = True
     for label, N1, N2, pg, a1, a2 in CASES:
         m = heisenberg(N1, N2, pg, a1, a2)
-        states, s2i = m._hilbert_space()
+        states = reference.basis_states(m)
+        s2i = {state: row for row, state in enumerate(states)}
         sectors = m.build_sectors(spin_flip=True)
         worst = 0.0
         for key, sector in sectors.items():
@@ -270,24 +277,27 @@ def test_dimensions_from_characters(tol: float = 1e-8, verbose: bool = True) -> 
     ok = True
     for label, N1, N2, pg, a1, a2 in CASES:
         m = heisenberg(N1, N2, pg, a1, a2)
-        states, s2i = m._hilbert_space()
         sectors = m.build_sectors()
         for k in m.tr_group.all_momenta():
             lg, _ = m.little_group(k)
             ops = list(lg)
-            reps, B, state2col = m._momentum_basis(k, states, s2i)
+            basis, columns = kernel.momentum_sector(m, k)
+            if columns.columns() == 0:
+                continue
             traces = {}
             for op in ops:
-                act, phase = m._sector_action(
-                    action_point_group(m, op), states, s2i, state2col, B)
-                traces[tuple(np.round(op.ravel(), 8))] = float(np.real(np.sum(
-                    phase * (act == np.arange(len(act))))))
+                action = kernel.monomial_of(m, m._action_for(op))
+                perm = _edkern.sector_action(columns, basis, action)
+                count = len(perm.act)
+                traces[tuple(np.asarray(op, dtype=float).ravel().round(8))] = float(np.real(
+                    np.sum([perm.phase[x] for x in range(count) if perm.act[x] == x])))
             for alpha in (['A'] if len(ops) == 1 else lg.all_irrps()):
                 d = 1 if len(ops) == 1 else lg.irrep_dim(alpha)
                 expected = 0.0
                 for op in ops:
                     chi = 1.0 if len(ops) == 1 else lg.character(alpha, op)
-                    expected += np.conj(chi) * traces[tuple(np.round(op.ravel(), 8))]
+                    key = tuple(np.asarray(op, dtype=float).ravel().round(8))
+                    expected += np.conj(chi) * traces[key]
                 expected = float(np.real(expected) * d / len(ops))
                 found = sectors[(k, alpha, None)].dim if (k, alpha, None) in sectors else 0
                 if abs(expected - found) > tol:
@@ -440,8 +450,9 @@ def test_orbital_mixing(tol: float = 1e-9, verbose: bool = True) -> bool:
     the group-law check test.
     '''
     model = build_two_orbital_model()
-    states, s2i = model._hilbert_space()
-    direct = np.sort(np.linalg.eigvalsh(model._build_H_sym().toarray()))
+    states = reference.basis_states(model)
+    s2i = {state: row for row, state in enumerate(states)}
+    direct = np.sort(reference.spectrum(reference.hamiltonian(model)))
     sectors = model.build_sectors()
     ev = np.sort(np.concatenate(
         [np.linalg.eigvalsh(sec.hamiltonian.toarray()) for sec in sectors.values()]))
@@ -489,6 +500,9 @@ def test_orbital_mixing(tol: float = 1e-9, verbose: bool = True) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    if _edkern is None:
+        print('  skipped: the C++ kernel is not built (python cpp/build.py)')
+        sys.exit(0)
     results = {}
     for name, fn in [('little groups', test_little_groups),
                      ('character tables', test_character_tables),

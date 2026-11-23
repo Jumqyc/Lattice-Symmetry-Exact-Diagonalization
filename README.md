@@ -5,9 +5,9 @@ translation sectors (momentum labels), the little group at each momentum, induce
 representations of the point group, monomial orbital actions, and the spin flip.
 
 The group theory, the model description and the API are Python.  Everything that
-loops over states, columns or group elements is a C++ extension; the Python
-implementation of the same steps stays in the tree as the reference the kernel is
-tested against.
+loops over states, columns or group elements is a C++ extension, and the Python
+side builds nothing but the arrays the kernel takes: the sectors are produced by
+the kernel and handed back as sparse matrices.
 
 Every object that scales with the Hilbert space is sparse -- the computational
 basis, the momentum sectors, the adapted vectors, the blocks and the Lanczos
@@ -27,7 +27,7 @@ the oracle the sparse results are compared against.
 | `ed.py` | `Model`, `Coupling`, sectors and their spectra |
 | `kernel.py` | the bridge: the model as the arrays the kernel takes, and back |
 | `cpp/` | the kernel: basis, monomial actions, Hamiltonian, sectors, solvers |
-| `test/` | one script per layer, comparing the kernel against the Python reference |
+| `test/` | one script per layer, each checked against an independent reference |
 | `doc/` | the write-up |
 | `demo.ipynb` | a tour of the lattice layer |
 
@@ -39,9 +39,10 @@ uv pip install -r requirements.txt
 .venv/bin/python cpp/build.py
 ```
 
-`Model.build_sectors` runs on the kernel through `kernel.py`; the Python
-implementation of the same steps is kept next to it as the reference the tests
-compare against, and is selected with `backend='python'`.
+`Model.build_sectors` runs on the kernel through `kernel.py`.  The tests take
+their oracle from `test/reference.py`, which writes the computational basis out
+with `itertools` and assembles the Hamiltonian densely straight from the
+couplings: dense matrices live there and nowhere else.
 
 `cpp/build.py` compiles `cpp/*.cpp` into `_edkern<ext>` in the repository root;
 that file is a build artefact and is not committed.  It needs a C++17 compiler

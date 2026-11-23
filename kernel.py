@@ -161,7 +161,7 @@ def group_actions(model: 'Model') -> list:
     return out
 
 
-def _hilbert_for(model: 'Model', op) -> int:
+def hilbert_index(model: 'Model', op) -> int:
     '''
     Index of the point-group action that belongs to an operation matrix.
 
@@ -178,6 +178,25 @@ def _hilbert_for(model: 'Model', op) -> int:
         if np.allclose(action.rotation, arr):
             return index
     raise ValueError('the operation is not part of the model')
+
+
+def momentum_sector(model: 'Model', k, sztot: Optional[int] = None):
+    '''
+    The momentum-adapted columns of one sector, as the kernel has them.
+
+    Args:
+        model: the model.
+        k: momentum label.
+        sztot: total charge, or None for the whole space.
+    Returns:
+        ``(basis, columns)``: the kernel's ``Basis`` and its ``SparseColumns``.
+        The tests use this to reach the momentum basis without going through
+        the sector decomposition.
+    '''
+    require()
+    basis = basis_of(model, sztot)
+    characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+    return basis, _edkern.momentum_basis(basis, translations(model), characters)
 
 
 # ── sparse results, as scipy matrices ─────────────────────────────────────────
@@ -284,7 +303,7 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
             actions, irreps = [identity], [('A', 1, [1.0 + 0.0j])]
         else:
             actions = [_edkern.sector_action(columns, basis,
-                                             monomial_of(model, model.hilbert[_hilbert_for(model, op)]))
+                                             monomial_of(model, model.hilbert[hilbert_index(model, op)]))
                        for op in ops]
             irreps = [(alpha, little.irrep_dim(alpha),
                        [little.character(alpha, op) for op in ops])

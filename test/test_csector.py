@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import importlib
 import numpy as np
+import reference
 from scipy.sparse import csr_matrix
 
 twod = importlib.import_module('geometry.2dsym')
@@ -149,14 +150,14 @@ def to_scipy(matrix) -> csr_matrix:
 # ── the checks ────────────────────────────────────────────────────────────────
 
 def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
-    '''The assembled Hamiltonian equals the Python one, and respects the group.'''
+    '''The assembled Hamiltonian equals the dense one, and respects the group.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
     actions = cxx_group_actions(model)
     raw = _edkern.assemble(basis, couplings)
     kernel = _edkern.symmetrise(raw, basis, actions)
-    reference = model._build_H_sym(Sztot)
-    difference = abs(to_scipy(kernel) - reference).max() if kernel.nonzeros() else 0.0
+    dense = csr_matrix(reference.hamiltonian(model, Sztot))
+    difference = abs(to_scipy(kernel) - dense).max() if kernel.nonzeros() else 0.0
     # the couplings are supposed to respect the group, so averaging must be a
     # no-op; if it is not, the fixture is not the model its label claims
     drift = abs(to_scipy(kernel) - to_scipy(raw)).max() if raw.nonzeros() else 0.0
@@ -167,25 +168,18 @@ def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> b
     return ok
 
 
-def sectors_of(model: Model, Sztot):
-    '''The Python sector decomposition, keyed by (k, irrep).'''
-    return {key: sector for key, sector in model.build_sectors(Sztot=Sztot).items()}
-
-
 def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
                        verbose: bool = True) -> bool:
-    '''Sector dimensions and block spectra equal the Python ones.'''
+    '''Block matrices, their dimensions and the union of their spectra.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
     actions = cxx_group_actions(model)
     hamiltonian = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis, actions)
-    reference = sectors_of(model, Sztot)
+    dense = reference.spectrum(reference.hamiltonian(model, Sztot))
     translations = [cxx_translation(model, t) for t in model.tr_group]
 
-    worst_dim = 0
-    worst_energy = 0.0
     worst_block = 0.0
-    checked = 0
+    collected = []
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
         columns = _edkern.momentum_basis(basis, translations, characters)
@@ -195,24 +189,22 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
         little_group, _ = model.little_group(k)
         ops = list(little_group)
         if len(ops) == 1:
-            continue
-        permutations = [_edkern.sector_action(columns, basis, cxx_action(model, op))
-                        for op in ops]
-        for alpha in little_group.all_irrps():
-            characters_alpha = [little_group.character(alpha, op) for op in ops]
-            vectors = _edkern.isotypic_basis(permutations, characters_alpha,
-                                             little_group.irrep_dim(alpha),
-                                             columns.columns())
-            if vectors.vectors() == 0:
-                continue
-            # the block comes back sparse; the dense matrix it stands for is
-            # built here, in the test, and diagonalised with numpy
+            # a trivial little group means the sector is the whole block
+            pieces = [(None, _edkern.identity_vectors(columns.columns()))]
+        else:
+            permutations = [_edkern.sector_action(columns, basis, cxx_action(model, op))
+                            for op in ops]
+            pieces = []
+            for alpha in little_group.all_irrps():
+                characters_alpha = [little_group.character(alpha, op) for op in ops]
+                vectors = _edkern.isotypic_basis(permutations, characters_alpha,
+                                                 little_group.irrep_dim(alpha),
+                                                 columns.columns())
+                if vectors.vectors() > 0:
+                    pieces.append((alpha, vectors))
+        for alpha, vectors in pieces:
             block = to_scipy(_edkern.block_matrix(sector_hamiltonian, vectors))
-            energies = np.sort(np.linalg.eigvalsh(block.toarray()))
-            reference_sector = reference.get((k, alpha, None))
-            want = (np.sort(np.linalg.eigvalsh(reference_sector.hamiltonian.toarray()))
-                    if reference_sector is not None else np.array([]))
-            worst_dim = max(worst_dim, abs(len(energies) - len(want)))
+            collected.append(np.linalg.eigvalsh(block.toarray()))
             # the sparse block against V^T H_k V formed densely from the same
             # vectors: an oracle for block_matrix that does not reuse its code
             dense_vectors = np.zeros((columns.columns(), vectors.vectors()), dtype=complex)
@@ -223,53 +215,14 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
                            @ (to_scipy(sector_hamiltonian).toarray() @ dense_vectors))
             worst_block = max(worst_block,
                               float(np.max(np.abs(block.toarray() - dense_block))))
-            if len(want):
-                worst_energy = max(worst_energy, float(np.max(np.abs(energies - want))))
-            checked += len(energies)
-    ok = worst_dim == 0 and worst_energy < tol and worst_block < tol
+    merged = np.sort(np.concatenate(collected)) if collected else np.zeros((0,))
+    worst_energy = (float(np.max(np.abs(merged - dense)))
+                    if len(merged) == len(dense) else float('inf'))
+    ok = worst_block < tol and worst_energy < tol
     if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} sectors: {checked} eigenvalues over all "
-              f"(k, alpha), dimension mismatch {worst_dim}, max |dE| {worst_energy:.1e}, "
+        print(f"  {'✓' if ok else 'FAIL'}  {label} sectors: {len(merged)} eigenvalues over "
+              f"all (k, alpha), max |dE| {worst_energy:.1e}, "
               f"|block - V^T H_k V| {worst_block:.1e}")
-    return ok
-
-
-def test_backend(model: Model, Sztot, label: str, spin_flip: bool = False,
-                 tol: float = 1e-9, verbose: bool = True) -> bool:
-    '''
-    The kernel backend of ``build_sectors`` against the Python one.
-
-    Both produce an orthonormal basis of the same sector and the restriction of
-    the same Hamiltonian to it, so the bases may differ by a rotation inside the
-    sector: what is compared is the projector onto the sector, which that
-    rotation leaves alone, and the spectrum of the block.
-    '''
-    reference = model.build_sectors(Sztot=Sztot, spin_flip=spin_flip, backend='python')
-    built = model.build_sectors(Sztot=Sztot, spin_flip=spin_flip, backend='kernel')
-    rng = np.random.default_rng(20261123)
-    ok = set(reference) == set(built)
-    worst_dim = 0
-    worst_spectrum = 0.0
-    worst_projector = 0.0
-    for key in reference:
-        first, second = reference[key], built[key]
-        worst_dim = max(worst_dim, abs(first.hamiltonian.shape[0] - second.hamiltonian.shape[0]))
-        worst_spectrum = max(worst_spectrum, float(np.max(np.abs(
-            np.sort(np.linalg.eigvalsh(first.hamiltonian.toarray()))
-            - np.sort(np.linalg.eigvalsh(second.hamiltonian.toarray()))))))
-        # the projectors are never formed: they are compared on a few seeded
-        # random vectors, which costs the nonzeros of the basis instead of the
-        # square of the Hilbert space
-        probes = rng.standard_normal((first.basis.shape[0], 3))
-        projected_first = np.asarray(first.basis @ (first.basis.conj().T @ probes))
-        projected_second = np.asarray(second.basis @ (second.basis.conj().T @ probes))
-        worst_projector = max(worst_projector,
-                              float(np.max(np.abs(projected_first - projected_second))))
-    ok = ok and worst_dim == 0 and worst_spectrum < tol and worst_projector < tol
-    if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} backend: {len(built)} sectors, same keys "
-              f"{set(reference) == set(built)}, dimension mismatch {worst_dim}, "
-              f"max |dE| {worst_spectrum:.1e}, projector difference {worst_projector:.1e}")
     return ok
 
 
@@ -333,9 +286,6 @@ def main():
         test_hamiltonian(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
-        test_backend(model, sztot, label)
-        if sztot is None:
-            test_backend(model, sztot, label + ', spin flip', spin_flip=True)
         print()
 
 
