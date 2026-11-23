@@ -41,53 +41,6 @@ void walk_term(const Basis& basis, const CouplingTerm& term, const std::vector<i
 
 }  // namespace
 
-void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word,
-                const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out)
-{
-    // One- and two-site terms are almost all of a lattice model, and the
-    // recursion costs more than the arithmetic it carries for them: the two
-    // cases are written out, the rest falls back to the walk.
-    const int bits = basis.bits();
-    const int sites = basis.sites();
-    if (term.sites.size() == 1) {
-        const int site = term.sites[0];
-        const LocalTerm& local = term.local[0];
-        const int shift = bits * (sites - 1 - site);
-        const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
-        for (std::size_t entry = 0; entry < local.in.size(); ++entry) {
-            if (local.in[entry] != digits[site]) continue;
-            const std::uint64_t shifted = static_cast<std::uint64_t>(local.out[entry]) << shift;
-            const int target = basis.index((word & ~mask) | shifted);
-            if (target >= 0) out.emplace_back(target, local.coeff[entry]);
-        }
-        return;
-    }
-    if (term.sites.size() == 2) {
-        const int first = term.sites[0];
-        const int second = term.sites[1];
-        const LocalTerm& local_first = term.local[0];
-        const LocalTerm& local_second = term.local[1];
-        const int shift_first = bits * (sites - 1 - first);
-        const int shift_second = bits * (sites - 1 - second);
-        const std::uint64_t mask_first = ((1ull << bits) - 1ull) << shift_first;
-        const std::uint64_t mask_second = ((1ull << bits) - 1ull) << shift_second;
-        for (std::size_t a = 0; a < local_first.in.size(); ++a) {
-            if (local_first.in[a] != digits[first]) continue;
-            const std::uint64_t once =
-                ((word & ~mask_first) | (static_cast<std::uint64_t>(local_first.out[a]) << shift_first));
-            for (std::size_t b = 0; b < local_second.in.size(); ++b) {
-                if (local_second.in[b] != digits[second]) continue;
-                const std::uint64_t twice = ((once & ~mask_second)
-                                             | (static_cast<std::uint64_t>(local_second.out[b])
-                                                << shift_second));
-                const int target = basis.index(twice);
-                if (target >= 0) out.emplace_back(target, local_first.coeff[a] * local_second.coeff[b]);
-            }
-        }
-        return;
-    }
-    walk_term(basis, term, digits, 0, word, Complex{1.0, 0.0}, out, true);
-}
 
 PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term)
 {

@@ -79,9 +79,6 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("columns", &ed::SectorVectors::columns)
         .def_readonly("data", &ed::SectorVectors::data)
         .def("vectors", &ed::SectorVectors::vectors);
-
-    m.def("identity_vectors", &ed::identity_vectors, py::arg("column_count"),
-          "The sector basis itself, for a trivial little group");
     m.def("isotypic_basis", &ed::isotypic_basis,
           py::call_guard<py::gil_scoped_release>(), py::arg("actions"), py::arg("characters"),
           py::arg("dim"), py::arg("column_count"), py::arg("threads") = 0, "Adapted basis of one irrep");

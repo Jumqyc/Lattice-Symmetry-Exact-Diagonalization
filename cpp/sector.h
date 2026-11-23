@@ -75,15 +75,7 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,
                              int dim, int column_count, int threads = 0);
 
-/**
- * @param column_count number of columns of the sector.
- * @detail The adapted set is the sector itself: one vector per column, with
- *         unit weight.  It is what the isotypic basis degenerates to when the
- *         little group is trivial, and it keeps the block assembly on the same
- *         path as every other sector instead of special-casing it.
- * @short The sector basis itself, as a SectorVectors.
- */
-SectorVectors identity_vectors(int column_count);
+
 
 /**
  * @param basis the computational basis.

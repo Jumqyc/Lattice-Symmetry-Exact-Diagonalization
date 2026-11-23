@@ -33,20 +33,7 @@ struct CouplingTerm {
     std::vector<LocalTerm> local;
 };
 
-/**
- * @param basis the computational basis.
- * @param term one term of the Hamiltonian.
- * @param word the packed state to act on.
- * @param digits the same state as local indices, one per site.
- * @param out appended with ``(image index, coefficient)`` for every image that
- *        lies inside the basis.
- * @detail The recursion walks the term's sites and carries the packed word, so
- *         no state vector is built; the caller unpacks the state once and passes
- *         the digits, which is what keeps a term application free of allocation.
- * @short Append the images of one term acting on one state.
- */
-void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word,
-                const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out);
+
 
 /**
  * @detail A term is *monomial* when the local operator at every site sends one
