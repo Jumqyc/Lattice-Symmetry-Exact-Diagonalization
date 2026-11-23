@@ -116,3 +116,54 @@ SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vecto
                           int threads = 0);
 
 }  // namespace ed
+
+namespace ed {
+
+/**
+ * @detail The momentum sector seen as orbit labels: which translation orbit a
+ *         state belongs to, and which translation carries the orbit's
+ *         representative to it.  That is all the projected product needs -- the
+ *         phase of a matrix element is a power of the character at the second
+ *         index -- so neither the momentum basis nor the sector Hamiltonian has to
+ *         exist as a matrix.
+ * @short State -> (orbit, translation) for one momentum sector.
+ */
+struct SectorMap {
+    std::vector<int> orbit;          // one entry per state
+    std::vector<short> translation;  // and the translation that reaches it
+    std::vector<int> representative; // the word of every orbit
+    std::vector<int> start;          // the states of an orbit: start[o]..start[o + 1]
+    std::vector<int> states;
+    int orbits = 0;
+};
+
+/**
+ * @param basis the computational basis.
+ * @param translations one action per translation, in character order.
+ * @detail Walks the basis once, the same way the momentum basis does, so the
+ *         orbits and their representatives match what momentum_basis would have
+ *         produced -- the representative is the smallest word of its orbit, which
+ *         is what fixes the phases.
+ * @short Label the translation orbits of a momentum sector.
+ */
+SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& translations);
+
+/**
+ * @param basis the computational basis.
+ * @param couplings the terms of the Hamiltonian.
+ * @param sector the orbit labels of the momentum sector.
+ * @param characters the character of the momentum at every translation.
+ * @param vector the sector vector, one entry per orbit.
+ * @param threads how many workers to use; 0 means one per hardware thread.
+ * @detail One row per orbit: the Hamiltonian is applied to the orbit's
+ *         representative term by term, and each image contributes to the orbit it
+ *         belongs to, weighted by the character at the translation that reaches
+ *         it.  No basis matrix and no sector Hamiltonian is ever formed, which is
+ *         what lets a lattice too large for either of them be handled.
+ * @short ``H_k vector``, matrix-free, in the space of orbit labels.
+ */
+std::vector<Complex> sector_apply(const Basis& basis, const std::vector<CouplingTerm>& couplings,
+                                  const SectorMap& sector, const std::vector<Complex>& characters,
+                                  const std::vector<Complex>& vector, int threads = 0);
+
+}  // namespace ed

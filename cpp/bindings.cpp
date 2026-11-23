@@ -1,4 +1,5 @@
 #include <pybind11/complex.h>
+#include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -88,6 +89,26 @@ PYBIND11_MODULE(_edkern, m)
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("columns"), py::arg("threads") = 0,
           "The Hamiltonian in a momentum-adapted basis, term by term");
+    py::class_<ed::SectorMap>(m, "SectorMap")
+        .def_readonly("orbits", &ed::SectorMap::orbits,
+                      "number of translation orbits in the sector")
+        .def("__len__", [](const ed::SectorMap& map) { return map.orbits; });
+
+    m.def("sector_map", &ed::sector_map, py::arg("basis"), py::arg("translations"),
+          "Translated orbit labels of one momentum sector");
+    m.def("sector_apply", &ed::sector_apply,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
+          py::arg("couplings"), py::arg("sector"), py::arg("characters"),
+          py::arg("vector"), py::arg("threads") = 0,
+          "The sector Hamiltonian applied to a sector vector, matrix-free");
+    m.def("lowest_eigenvalues_free",
+          py::overload_cast<const ed::MatrixVector&, int, int, int, double, int>(
+              &ed::lowest_eigenvalues),
+          py::call_guard<py::gil_scoped_release>(), py::arg("multiply"),
+          py::arg("dimension"), py::arg("count"), py::arg("iterations") = 200,
+          py::arg("tolerance") = 1e-10, py::arg("threads") = 0,
+          "Lowest eigenvalues of an operator given as a product");
+
     m.def("block_matrix", &ed::block_matrix,
           py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
           py::arg("threads") = 0,

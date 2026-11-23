@@ -451,3 +451,99 @@ SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vecto
 }
 
 }  // namespace ed
+
+namespace ed {
+
+SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& translations)
+{
+    const int n = basis.size();
+    const int groups = static_cast<int>(translations.size());
+    SectorMap out;
+    out.orbit.assign(static_cast<std::size_t>(n), -1);
+    out.translation.assign(static_cast<std::size_t>(n), 0);
+    out.start.push_back(0);
+    for (int state = 0; state < n; ++state) {
+        if (out.orbit[state] >= 0) continue;          // its orbit is already labelled
+        const int label = out.orbits;
+        std::uint64_t smallest = std::numeric_limits<std::uint64_t>::max();
+        std::vector<int> members;
+        for (int g = 0; g < groups; ++g) {
+            const std::uint64_t image = apply(basis, translations[g], basis.state(state)).first;
+            const int at = basis.index(image);
+            if (at < 0)
+                throw std::runtime_error("a translation left the basis; the sector is inconsistent");
+            out.orbit[at] = label;
+            smallest = std::min(smallest, image);
+        }
+        // the translations are recorded relative to the representative, and the
+        // representative's orbit is listed in the order its states appear in the
+        // basis, so the two agree whatever the orbit looks like
+        const int representative = basis.index(smallest);
+        for (int g = 0; g < groups; ++g) {
+            const std::uint64_t image = apply(basis, translations[g], smallest).first;
+            out.translation[basis.index(image)] = static_cast<short>(g);
+        }
+        for (int at = 0; at < n; ++at) if (out.orbit[at] == label) members.push_back(at);
+        std::sort(members.begin(), members.end());
+        for (const int member : members) out.states.push_back(member);
+        out.start.push_back(static_cast<int>(out.states.size()));
+        out.representative.push_back(representative);
+        ++out.orbits;
+    }
+    return out;
+}
+
+std::vector<Complex> sector_apply(const Basis& basis, const std::vector<CouplingTerm>& couplings,
+                                  const SectorMap& sector, const std::vector<Complex>& characters,
+                                  const std::vector<Complex>& vector, int threads)
+{
+    const int orbits = sector.orbits;
+    if (static_cast<int>(vector.size()) != orbits)
+        throw std::invalid_argument("the vector does not match the momentum sector");
+
+    std::vector<PreparedTerm> prepared;
+    prepared.reserve(couplings.size());
+    for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
+
+    // The row of one orbit: the weight of a state in its momentum column is
+    // ``conj(character)/sqrt(size)``, so the row is a double sum over the orbit's
+    // own states and the images of each of them.  Nothing of the size of the basis
+    // is allocated and no matrix is formed.
+    std::vector<Complex> out(static_cast<std::size_t>(orbits), Complex{0.0, 0.0});
+    std::vector<double> length(static_cast<std::size_t>(orbits), 0.0);
+    for (int label = 0; label < orbits; ++label)
+        length[static_cast<std::size_t>(label)] =
+            std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
+    parallel_ranges(orbits, [&](int begin, int end) {
+        std::vector<int> digits;
+        std::vector<int> prefix;
+        std::vector<std::pair<int, Complex>> images;
+        for (int label = begin; label < end; ++label) {
+            const double weight_scale = 1.0 / length[static_cast<std::size_t>(label)];
+            Complex total{0.0, 0.0};
+            for (int at = sector.start[label]; at < sector.start[label + 1]; ++at) {
+                const int state = sector.states[at];
+                const Complex weight = std::conj(characters[sector.translation[state]]) * weight_scale;
+                basis.unpack_into(basis.state(state), digits);
+                if (!basis.has_table()) basis.prefix_charges(digits, prefix);
+                Complex inner{0.0, 0.0};
+                for (const PreparedTerm& term : prepared) {
+                    images.clear();
+                    apply_prepared(basis, term, basis.state(state), digits, prefix, state, images);
+                    for (const auto& entry : images) {
+                        const int target = entry.first;
+                        const int other = sector.orbit[target];
+                        const Complex column = std::conj(characters[sector.translation[target]])
+                                               / length[static_cast<std::size_t>(other)];
+                        inner += entry.second * std::conj(column) * vector[other];
+                    }
+                }
+                total += std::conj(weight) * inner;
+            }
+            out[label] = total;
+        }
+    }, threads);
+    return out;
+}
+
+}  // namespace ed
