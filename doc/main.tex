@@ -716,20 +716,21 @@ to the number of nonzeros of $H$: at most the dimension, times the number of
 terms, times the largest number of images one term produces, and in practice far
 less than that.
 
-\item \textbf{Symmetrisation} (optional, and unnecessary when the couplings
-already respect the group). If the Hamiltonian is given as a single generating
-term, or as a set of terms that is not closed under the group, replace it by
+\item \textbf{Invariance check.} The couplings \emph{are} the Hamiltonian, so
+what has to hold is that their images under the group are again couplings of the
+model. This is a check and not a repair: the image of every coupling under every
+element is looked for in the list, at a cost of $|\Glatt|$ times the number of
+terms, and a coupling that has none is reported. The alternative, averaging the
+Hamiltonian over the group,
 \begin{equation}
-  H \mapsto \frac{1}{|\Glatt|}\sum_{g\in\Glatt} U(g)\,H\,U(g)^{-1}.
+  H \mapsto \frac{1}{|\Glatt|}\sum_{g\in\Glatt} U(g)\,H\,U(g)^{-1},
   \label{eq:sym}
 \end{equation}
-This is the projector onto the operators that commute with the group. On an
-invariant input it is the identity, so it may be applied without changing the
-model; on a non-invariant one it silently replaces the model by its average. One
-sparse comparison with the input separates the two cases, and it is worth making,
-because the second one is otherwise invisible. Note that the prefactor is $1/|\Glatt|$, not a normalization chosen to
-suit the model: symmetrising a single term and then forgetting the factor scales
-the Hamiltonian, and every energy with it.
+is the projector onto the operators that commute with the group; it turns a model
+that does not respect the symmetry into the average of its images, which is a
+different model, and it does so silently. Since a bond list that looks periodic
+may still miss the bonds that close the torus, the check earns its keep: it is
+what turns that class of mistake into an error message.
 
 \item \textbf{Momentum sectors.} For every $\mathbf{n}$, walk the translation
 orbits once: for each representative apply the translations, accumulate the
