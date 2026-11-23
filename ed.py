@@ -31,7 +31,7 @@ import kernel
 
 from base import LatticeAction, PointGroup
 from hilbert_action import MonomialAction, Permutation, extract_monomial, from_lattice_action
-from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
+from lattice_action import AffineAction, Lattice, TranslationGroup, label_action, little_group
 from representation import TrivialGroup
 
 
@@ -401,6 +401,56 @@ class Model:
         self.check_symmetry()
         return kernel.spectra_free(self, count=count, sztot=Sztot, threads=threads)
 
+    def sector_characters(self) -> dict[tuple, tuple[int, NDArray[np.complex128]]]:
+        '''
+        The induced character of every sector of the lattice group.
+
+        A sector is a pair ``(k, α)``: a momentum carried by the translation
+        subgroup and an irreducible representation of its little group.  The
+        representation of the lattice group ``G_latt = G_tr ⋊ G_pt`` that it induces
+        has the character
+
+            χ_{k,α}(t, r) = Σ_{γ ∈ G_pt / G_k} χ_k(γ t) χ̃_α(γ r γ^{-1}),
+
+        with ``χ̃_α`` the character of the little group extended by zero outside it
+        and ``γ`` running over a transversal of ``G_k`` in the point group.  Only one
+        momentum per star is listed, because ``k`` and ``R k`` induce equivalent
+        representations.
+
+        The elements are enumerated as ``(t, r)`` with ``t`` over the translations
+        and ``r`` over the point group, so the array is indexed by
+        ``translation * |G_pt| + rotation``.
+
+        Returns:
+            A dict from ``(k, α)`` to ``(dimension, characters)``, where the
+            dimension is ``|G_pt / G_k| d_α`` -- the character of the identity -- and
+            the characters have one entry per element of the lattice group.
+        '''
+        rotations = list(self.point_group)
+        out = {}
+        for k in self.tr_group.all_momenta():
+            if tuple(k) != tuple(min(_star(self, k))):
+                continue                      # one momentum per star
+            little, coset_reps = self.little_group(k)
+            little_ops = list(little)
+            for alpha in little.all_irrps():
+                characters = np.zeros(len(self.tr_group) * len(rotations), dtype=complex)
+                for i, t in enumerate(self.tr_group):
+                    t_vec = self.tr_group.translation_vector(t)
+                    for j, r in enumerate(rotations):
+                        value = 0j
+                        for gamma in coset_reps:
+                            # the rotated translation is again a translation, and its
+                            # momentum weight is what the induction multiplies in
+                            weight = np.exp(1j * (self.tr_group.momentum_vector(
+                                k, self.bz_cellvectors) @ (gamma @ t_vec)))
+                            conjugated = gamma @ r @ np.linalg.inv(gamma)
+                            if any(np.allclose(conjugated, h) for h in little_ops):
+                                value += weight * little.character(alpha, conjugated)
+                        characters[i * len(rotations) + j] = value
+                out[(tuple(k), alpha)] = (len(coset_reps) * little.irrep_dim(alpha), characters)
+        return out
+
     def check_symmetry(self) -> None:
         '''
         Check that the couplings are closed under the space group.
@@ -594,3 +644,16 @@ class Coupling:
         sites_str = str(self.sites)
         return (f"Coupling(phys_dim={self.phys_dim}, sites={sites_str}, "
                 f"terms={n_terms})")
+
+def _star(model: 'Model', k: tuple) -> set:
+    '''
+    The momenta equivalent to *k* under the point group.
+
+    Args:
+        model: the model.
+        k: a momentum label.
+    Returns:
+        The set of momentum labels in the star of *k*.
+    '''
+    return {tuple((label_action(op, model.supercell_vectors).T @ np.array(k)) % model.Nvec)
+            for op in model.point_group}

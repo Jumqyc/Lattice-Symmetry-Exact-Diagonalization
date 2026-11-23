@@ -50,35 +50,6 @@ def star(model: Model, k: tuple[int, ...]) -> set[tuple[int, ...]]:
             for op in model.point_group}
 
 
-def induced_character(model: Model, k: tuple[int, ...], alpha: str
-                      ) -> np.ndarray:
-    '''
-    Induced character of the irrep ``(k, α)``, on all elements of G_latt.
-
-    The elements are enumerated as ``(t, r)`` with ``t`` running over the
-    translations and ``r`` over the point group; the character is evaluated at
-    ``(t, r)`` with the formula quoted in the docstring of the module.
-    '''
-    lg, coset_reps = model.little_group(k)
-    lg_ops = list(lg)
-    ops = list(model.point_group)
-    chi = np.zeros(len(model.tr_group) * len(ops), dtype=complex)
-    for i, t in enumerate(model.tr_group):
-        t_vec = model.tr_group.translation_vector(t)
-        for j, r in enumerate(ops):
-            value = 0j
-            for gamma in coset_reps:
-                # the rotated translation gamma t is again a translation
-                rotated = model.tr_group.momentum_vector(
-                    k, model.bz_cellvectors) @ (gamma @ t_vec)
-                phase = np.exp(1j * rotated)
-                conjugated = gamma @ r @ np.linalg.inv(gamma)
-                if any(np.allclose(conjugated, h) for h in lg_ops):
-                    value += phase * lg.character(alpha, conjugated)
-            chi[i * len(ops) + j] = value
-    return chi
-
-
 def test_orthogonality(model: Model, label: str, tol: float = 1e-10,
                        verbose: bool = True) -> bool:
     '''
@@ -95,13 +66,10 @@ def test_orthogonality(model: Model, label: str, tol: float = 1e-10,
     ops = list(model.point_group)
     order = len(model.tr_group) * len(ops)
     # one momentum per star
-    reps = sorted({min(star(model, k)) for k in model.tr_group.all_momenta()})
-    chars, dims = {}, {}
-    for k in reps:
-        lg, coset_reps = model.little_group(k)
-        for alpha in lg.all_irrps():
-            chars[(k, alpha)] = induced_character(model, k, alpha)
-            dims[(k, alpha)] = len(coset_reps) * lg.irrep_dim(alpha)
+    # the characters come from the model, which is the one place the formula lives
+    sectors = model.sector_characters()
+    chars = {key: value[1] for key, value in sectors.items()}
+    dims = {key: value[0] for key, value in sectors.items()}
     keys = list(chars)
     failures = []
     for i, ki in enumerate(keys):
@@ -119,7 +87,7 @@ def test_orthogonality(model: Model, label: str, tol: float = 1e-10,
         failures.append(f"Σ d² = {sum(d ** 2 for d in dims.values()):.6f} "
                         f"(expected |G_latt| = {order})")
     if verbose:
-        print(f"  {'✓' if not failures else 'FAIL'}  {label}: {len(reps)} stars, "
+        print(f"  {'✓' if not failures else 'FAIL'}  {label}: {len(keys)} sectors, "
               f"{len(keys)} induced irreps, |G_latt| = {order}, "
               f"Σ d² = {sum(d ** 2 for d in dims.values()):.0f}")
         for line in failures[:3]:
