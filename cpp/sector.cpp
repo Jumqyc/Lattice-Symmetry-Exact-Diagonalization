@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <numeric>
 #include <random>
 #include <stdexcept>
-
-#include <Eigen/Dense>
+#include <vector>
 
 namespace ed {
 
@@ -45,6 +45,79 @@ std::vector<std::vector<int>> column_orbits(const std::vector<PhasedPermutation>
         orbits.push_back(orbit);
     }
     return orbits;
+}
+
+/**
+ * @param alpha diagonal of the tridiagonal Lanczos matrix.
+ * @param beta subdiagonal; ``beta[i]`` joins step ``i`` and step ``i+1``.
+ * @param x the shift.
+ * @detail The number of negative pivots of the LDL^T factor of ``T - x`` equals
+ *         the number of eigenvalues below ``x`` (Sylvester's law of inertia).
+ *         Only the two diagonals are touched, so no matrix is formed.
+ * @short How many eigenvalues of the tridiagonal lie below ``x``.
+ */
+int count_below(const std::vector<double>& alpha, const std::vector<double>& beta, double x)
+{
+    int below = 0;
+    double pivot = alpha[0] - x;
+    if (pivot < 0.0) ++below;
+    for (std::size_t i = 1; i < alpha.size(); ++i) {
+        // a vanishing pivot is a shift sitting on an eigenvalue; nudging it off
+        // keeps the inertia count, which is what the bisection uses
+        if (std::abs(pivot) < 1e-300) pivot = 1e-300;
+        pivot = (alpha[i] - x) - beta[i - 1] * beta[i - 1] / pivot;
+        if (pivot < 0.0) ++below;
+    }
+    return below;
+}
+
+/**
+ * @param alpha diagonal of the tridiagonal matrix.
+ * @param beta subdiagonal.
+ * @param theta an eigenvalue of the tridiagonal.
+ * @detail The last component of the eigenvector is what the Ritz residual needs.
+ *         It comes from a few steps of inverse iteration with the LDL^T
+ *         factorization of ``T - theta``, solved by forward and back
+ *         substitution: both are linear in the number of steps, and the
+ *         tridiagonal is never stored as a matrix.  The shift keeps the
+ *         factorization away from the eigenvalue the iteration is aiming at.
+ * @short Last component of the normalized eigenvector of the tridiagonal.
+ */
+double last_component(const std::vector<double>& alpha, const std::vector<double>& beta,
+                      double theta)
+{
+    const int steps = static_cast<int>(alpha.size());
+    if (steps == 1) return 1.0;
+    const double shift = 1e-12 * (1.0 + std::abs(theta));
+    std::vector<double> diagonal(static_cast<std::size_t>(steps));
+    std::vector<double> forward(static_cast<std::size_t>(steps));
+    std::vector<double> vector(static_cast<std::size_t>(steps), 0.0);
+    std::vector<double> previous(static_cast<std::size_t>(steps), 0.0);
+    previous[0] = 1.0;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        diagonal[0] = alpha[0] - theta + shift;
+        for (int i = 1; i < steps; ++i) {
+            const double pivot = std::abs(diagonal[i - 1]) > 1e-14 ? diagonal[i - 1] : 1e-14;
+            diagonal[i] = alpha[i] - theta + shift - beta[i - 1] * beta[i - 1] / pivot;
+        }
+        forward[0] = previous[0];
+        for (int i = 1; i < steps; ++i) {
+            const double pivot = std::abs(diagonal[i - 1]) > 1e-14 ? diagonal[i - 1] : 1e-14;
+            forward[i] = previous[i] - beta[i - 1] * forward[i - 1] / pivot;
+        }
+        vector[steps - 1] = forward[steps - 1] / diagonal[steps - 1];
+        for (int i = steps - 2; i >= 0; --i) {
+            const double pivot = std::abs(diagonal[i]) > 1e-14 ? diagonal[i] : 1e-14;
+            vector[i] = (forward[i] - beta[i] * vector[i + 1]) / pivot;
+        }
+        double norm = 0.0;
+        for (const double value : vector) norm += value * value;
+        norm = std::sqrt(norm);
+        if (norm <= 0.0) return 0.0;
+        for (int i = 0; i < steps; ++i) vector[i] /= norm;
+        previous = vector;
+    }
+    return std::abs(vector[steps - 1]);
 }
 
 }  // namespace
@@ -93,36 +166,86 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
 
     SectorVectors out;
     out.start.assign(1, 0);
+    std::vector<Complex> candidate;             // one orbit, never the sector
     for (int index = 0; index < static_cast<int>(orbits.size()); ++index) {
         const std::vector<int>& orbit = orbits[index];
         const int size = static_cast<int>(orbit.size());
         std::vector<int> local(column_count, -1);
         for (int i = 0; i < size; ++i) local[orbit[i]] = i;
 
-        // the projector on this orbit: a sum of |G| phased permutation matrices,
-        // reduced to the size of the orbit instead of the size of the sector
-        Eigen::MatrixXcd projector = Eigen::MatrixXcd::Zero(size, size);
-        for (int g = 0; g < groups; ++g)
-            for (int i = 0; i < size; ++i) {
-                const int to = local[actions[g].act[orbit[i]]];
-                projector(to, i) += std::conj(characters[g]) * actions[g].phase[orbit[i]]
-                                    * (static_cast<double>(dim) / static_cast<double>(groups));
+        // the rank the character predicts on this orbit, from the trace of the
+        // projector: it is what the orthonormalisation below has to reproduce
+        Complex trace{0.0, 0.0};
+        for (int g = 0; g < groups; ++g) {
+            Complex fixed{0.0, 0.0};
+            for (int i = 0; i < size; ++i)
+                if (local[actions[g].act[orbit[i]]] == i) fixed += actions[g].phase[orbit[i]];
+            trace += std::conj(characters[g]) * fixed;
+        }
+        const int expected = static_cast<int>(std::lround(
+            (static_cast<double>(dim) / static_cast<double>(groups)) * trace.real()));
+
+        // the projected basis vectors of this orbit, orthonormalized one at a
+        // time: the image of the projector is spanned by them, so this gives an
+        // orthonormal basis of the isotypic component of the orbit
+        std::vector<std::vector<std::pair<int, Complex>>> accepted;
+        for (int x = 0; x < size && static_cast<int>(accepted.size()) < expected; ++x) {
+            candidate.assign(size, Complex{0.0, 0.0});
+            for (int g = 0; g < groups; ++g) {
+                const int to = local[actions[g].act[orbit[x]]];
+                candidate[to] += std::conj(characters[g]) * actions[g].phase[orbit[x]]
+                                 * (static_cast<double>(dim) / static_cast<double>(groups));
             }
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> solver(projector);
-        if (solver.info() != Eigen::Success)
-            throw std::runtime_error("the sector projector could not be diagonalised");
-        for (int rho = 0; rho < size; ++rho) {
-            if (solver.eigenvalues()[rho] < 0.5) continue;
-            const Eigen::VectorXcd vector = solver.eigenvectors().col(rho);
+            // two passes of modified Gram-Schmidt over the accepted supports; a
+            // single pass loses orthogonality as soon as the orbit is larger
+            // than a handful of columns
+            for (int pass = 0; pass < 2; ++pass)
+                for (const auto& keep : accepted) {
+                    Complex overlap{0.0, 0.0};
+                    for (const auto& entry : keep)
+                        overlap += std::conj(entry.second) * candidate[entry.first];
+                    for (const auto& entry : keep)
+                        candidate[entry.first] -= overlap * entry.second;
+                }
+            double norm = 0.0;
+            for (const Complex value : candidate) norm += std::norm(value);
+            norm = std::sqrt(norm);
+            if (norm < 1e-8) continue;          // dependent on what is already in
+            std::vector<std::pair<int, Complex>> vector;
             for (int i = 0; i < size; ++i) {
-                if (std::abs(vector[i]) < 1e-12) continue;
-                out.columns.push_back(orbit[i]);
-                out.data.push_back(vector[i]);
+                if (std::abs(candidate[i]) < 1e-14) continue;
+                vector.emplace_back(i, candidate[i] / norm);
             }
+            accepted.push_back(std::move(vector));
+        }
+        if (static_cast<int>(accepted.size()) != expected)
+            throw std::runtime_error(
+                "the isotypic component of an orbit has the wrong dimension: the "
+                "character table and the action on the sector disagree");
+
+        for (const auto& vector : accepted) {
+            for (const auto& entry : vector) out.columns.push_back(orbit[entry.first]);
+            for (const auto& entry : vector) out.data.push_back(entry.second);
             out.start.push_back(static_cast<int>(out.columns.size()));
             out.orbit_of_vector.push_back(index);
         }
     }
+    return out;
+}
+
+SectorVectors identity_vectors(int column_count)
+{
+    SectorVectors out;
+    out.start.resize(static_cast<std::size_t>(column_count) + 1);
+    out.columns.resize(column_count);
+    out.data.assign(column_count, Complex{1.0, 0.0});
+    out.orbit_of_vector.resize(column_count);
+    for (int c = 0; c < column_count; ++c) {
+        out.start[c] = c;
+        out.columns[c] = c;
+        out.orbit_of_vector[c] = c;
+    }
+    out.start[column_count] = column_count;
     return out;
 }
 
@@ -185,45 +308,80 @@ SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseCol
     return transpose(by_column);
 }
 
-std::vector<Complex> block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors)
+SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors)
 {
     const int m = vectors.vectors();
-    if (m == 0) return {};
+    SparseMatrix by_column;
+    by_column.rows = m;
+    by_column.cols = m;
+    by_column.indptr.assign(static_cast<std::size_t>(m) + 1, 0);
+    if (m == 0) return by_column;
 
-    // V^T H V, one column at a time: scatter the column of V into a dense
-    // sector vector, multiply, then overlap with every row of V.  The scatter
-    // must go through the matrix's own rows -- walking the rows of H while
-    // reading back on the support of the vector computes H^T v, not H v.
-    std::vector<Complex> out(static_cast<std::size_t>(m) * m, Complex{0.0, 0.0});
-    std::vector<Complex> column(static_cast<std::size_t>(matrix.cols), Complex{0.0, 0.0});
-    for (int c = 0; c < m; ++c) {
-        std::fill(column.begin(), column.end(), Complex{0.0, 0.0});
-        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a)
-            column[vectors.columns[a]] = vectors.data[a];
-        const std::vector<Complex> applied = multiply(matrix, column);
-        for (int r = 0; r < m; ++r) {
-            Complex sum{0.0, 0.0};
-            for (int a = vectors.start[r]; a < vectors.start[r + 1]; ++a)
-                sum += std::conj(vectors.data[a]) * applied[vectors.columns[a]];
-            out[static_cast<std::size_t>(r) + static_cast<std::size_t>(m) * c] = sum;
+    // V^T, walked by sector column: the block rows whose vector contains that
+    // column.  A vector lives on one orbit, so this stays as sparse as V.
+    std::vector<int> start(static_cast<std::size_t>(matrix.cols) + 1, 0);
+    for (const int column : vectors.columns) ++start[column + 1];
+    for (int a = 0; a < matrix.cols; ++a) start[a + 1] += start[a];
+    std::vector<int> row_of(vectors.columns.size());
+    std::vector<Complex> value_of(vectors.columns.size());
+    std::vector<int> cursor(start.begin(), start.end() - 1);
+    for (int c = 0; c < m; ++c)
+        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
+            const int at = cursor[vectors.columns[a]]++;
+            row_of[at] = c;
+            value_of[at] = std::conj(vectors.data[a]);
         }
-    }
-    return out;
-}
 
-std::vector<double> eigenvalues(const std::vector<Complex>& block, int size)
-{
-    if (size <= 0) return {};          // an irrep can be absent from a sector
-    Eigen::MatrixXcd matrix(size, size);
-    for (int i = 0; i < size; ++i)
-        for (int j = 0; j < size; ++j)
-            matrix(i, j) = block[static_cast<std::size_t>(i) + static_cast<std::size_t>(size) * j];
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> solver(matrix);
-    if (solver.info() != Eigen::Success)
-        throw std::runtime_error("the block could not be diagonalised");
-    std::vector<double> out(size);
-    for (int i = 0; i < size; ++i) out[i] = solver.eigenvalues()[i];
-    return out;
+    // V^T H V, one column at a time: H applied to the column of V stays sparse,
+    // and every entry of it is scattered over the few block rows that contain
+    // its sector row.  Nothing of the size of the sector is ever allocated.
+    // The product walks the columns of H, so H is transposed once: walking its
+    // rows instead would accumulate (H^T v).
+    const SparseMatrix transposed = transpose(matrix);
+    std::vector<std::pair<int, Complex>> applied;
+    std::vector<std::pair<int, Complex>> terms;
+    for (int c = 0; c < m; ++c) {
+        applied.clear();
+        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
+            const int source = vectors.columns[a];
+            const Complex weight = vectors.data[a];
+            for (int b = transposed.indptr[source]; b < transposed.indptr[source + 1]; ++b)
+                applied.emplace_back(transposed.indices[b], transposed.data[b] * weight);
+        }
+        std::sort(applied.begin(), applied.end(),
+                  [](const auto& left, const auto& right) { return left.first < right.first; });
+        terms.clear();
+        for (std::size_t i = 0; i < applied.size();) {
+            const int row = applied[i].first;
+            Complex sum{0.0, 0.0};
+            std::size_t j = i;
+            while (j < applied.size() && applied[j].first == row) {
+                sum += applied[j].second;
+                ++j;
+            }
+            i = j;
+            if (std::abs(sum) < 1e-14) continue;
+            for (int t = start[row]; t < start[row + 1]; ++t)
+                terms.emplace_back(row_of[t], value_of[t] * sum);
+        }
+        std::sort(terms.begin(), terms.end(),
+                  [](const auto& left, const auto& right) { return left.first < right.first; });
+        for (std::size_t i = 0; i < terms.size();) {
+            const int row = terms[i].first;
+            Complex sum{0.0, 0.0};
+            std::size_t j = i;
+            while (j < terms.size() && terms[j].first == row) {
+                sum += terms[j].second;
+                ++j;
+            }
+            i = j;
+            if (std::abs(sum) < 1e-14) continue;
+            by_column.indices.push_back(row);
+            by_column.data.push_back(sum);
+        }
+        by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
+    }
+    return transpose(by_column);
 }
 
 std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
@@ -247,19 +405,23 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
     norm = std::sqrt(norm);
     for (auto& value : current) value /= norm;
 
+    // the recurrence is kept as its two diagonals: no matrix of the size of the
+    // number of steps is ever formed
     std::vector<std::vector<Complex>> basis;
     basis.reserve(steps_max);
-    Eigen::MatrixXd tridiagonal = Eigen::MatrixXd::Zero(steps_max, steps_max);
+    std::vector<double> alpha(static_cast<std::size_t>(steps_max), 0.0);
+    std::vector<double> beta(static_cast<std::size_t>(steps_max > 1 ? steps_max - 1 : 0), 0.0);
     std::vector<Complex> previous(static_cast<std::size_t>(n), Complex{0.0, 0.0});
     double beta_previous = 0.0;
+    double beta_end = 0.0;
     int steps = 0;
     for (int step = 0; step < steps_max; ++step) {
         basis.push_back(current);
         std::vector<Complex> next = multiply(matrix, current);
-        Complex alpha{0.0, 0.0};
-        for (int i = 0; i < n; ++i) alpha += std::conj(current[i]) * next[i];
+        Complex alpha_value{0.0, 0.0};
+        for (int i = 0; i < n; ++i) alpha_value += std::conj(current[i]) * next[i];
         for (int i = 0; i < n; ++i) {
-            next[i] -= alpha * current[i];
+            next[i] -= alpha_value * current[i];
             next[i] -= beta_previous * previous[i];
         }
         // full reorthogonalisation, twice: the price of a trustworthy degenerate
@@ -270,43 +432,57 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
                 for (int i = 0; i < n; ++i) overlap += std::conj(keep[i]) * next[i];
                 for (int i = 0; i < n; ++i) next[i] -= overlap * keep[i];
             }
-        tridiagonal(step, step) = alpha.real();
-        if (step > 0) {
-            tridiagonal(step - 1, step) = beta_previous;
-            tridiagonal(step, step - 1) = beta_previous;
-        }
-        double beta = 0.0;
-        for (const auto& value : next) beta += std::norm(value);
-        beta = std::sqrt(beta);
+        alpha[step] = alpha_value.real();
+        if (step > 0) beta[step - 1] = beta_previous;
+        double beta_value = 0.0;
+        for (const auto& value : next) beta_value += std::norm(value);
+        beta_value = std::sqrt(beta_value);
         ++steps;
-        if (beta < tolerance || step + 1 == steps_max) break;
+        beta_end = beta_value;
+        if (beta_value < tolerance || step + 1 == steps_max) break;
         previous = std::move(current);
-        beta_previous = beta;
+        beta_previous = beta_value;
         current = std::move(next);
-        for (auto& value : current) value /= beta;
+        for (auto& value : current) value /= beta_value;
     }
+    alpha.resize(steps);
+    if (steps > 1) beta.resize(steps - 1);
 
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(tridiagonal.topLeftCorner(steps, steps));
-    const Eigen::VectorXd values = solver.eigenvalues();
-    const Eigen::MatrixXd rotations = solver.eigenvectors();
-    std::vector<double> out(std::min<int>(count, static_cast<int>(values.size())));
-    for (int i = 0; i < static_cast<int>(out.size()); ++i) out[i] = values[i];
+    // spectral bounds from the Gershgorin discs of the tridiagonal
+    double low = alpha[0];
+    double high = alpha[0];
+    double width = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        low = std::min(low, alpha[i]);
+        high = std::max(high, alpha[i]);
+    }
+    for (int i = 0; i + 1 < steps; ++i) width = std::max(width, beta[i]);
+    low -= width;
+    high += width;
+    const double resolution = (high - low) * 1e-15;
+
+    // the lowest Ritz values, by bisection on the inertia count: the tridiagonal
+    // is never stored, let alone diagonalised as a dense matrix
+    std::vector<double> out(static_cast<std::size_t>(count), 0.0);
+    for (int j = 0; j < count; ++j) {
+        double left = low;
+        double right = high;
+        for (int iteration = 0; iteration < 200 && (right - left) > resolution; ++iteration) {
+            const double middle = 0.5 * (left + right);
+            if (count_below(alpha, beta, middle) > j) right = middle;
+            else left = middle;
+        }
+        out[j] = 0.5 * (left + right);
+    }
 
     // A Ritz value is only an eigenvalue once its residual is small; the tail of
     // an unconverged recurrence produces numbers that lie between true levels
-    // and are eigenvalues of nothing.  The test costs one matrix-vector product
-    // per requested value.
-    for (int i = 0; i < static_cast<int>(out.size()); ++i) {
-        std::vector<Complex> ritz(static_cast<std::size_t>(n), Complex{0.0, 0.0});
-        for (int step = 0; step < steps; ++step) {
-            const double coefficient = rotations(step, i);
-            if (coefficient == 0.0) continue;
-            for (int k = 0; k < n; ++k) ritz[k] += coefficient * basis[step][k];
-        }
-        const std::vector<Complex> image = multiply(matrix, ritz);
-        double residual = 0.0;
-        for (int k = 0; k < n; ++k) residual += std::norm(image[k] - out[i] * ritz[k]);
-        if (std::sqrt(residual) > tolerance * std::max(1.0, std::abs(out[i])))
+    // and are eigenvalues of nothing.  The residual of a Ritz pair is the last
+    // component of its tridiagonal eigenvector times the first neglected
+    // off-diagonal, so it costs one pass over the recurrence.
+    for (int j = 0; j < count; ++j) {
+        const double residual = beta_end * last_component(alpha, beta, out[j]);
+        if (residual > tolerance * std::max(1.0, std::abs(out[j])))
             throw std::runtime_error(
                 "Lanczos did not converge: raise the number of iterations");
     }

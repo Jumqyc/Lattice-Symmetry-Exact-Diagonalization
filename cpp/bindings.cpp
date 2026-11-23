@@ -97,13 +97,14 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("orbit_of_vector", &ed::SectorVectors::orbit_of_vector)
         .def("vectors", &ed::SectorVectors::vectors);
 
+    m.def("identity_vectors", &ed::identity_vectors, py::arg("column_count"),
+          "The sector basis itself, for a trivial little group");
     m.def("isotypic_basis", &ed::isotypic_basis, py::arg("actions"), py::arg("characters"),
           py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
     m.def("sector_hamiltonian", &ed::sector_hamiltonian, py::arg("hamiltonian"),
           py::arg("columns"), "The Hamiltonian in a momentum-adapted basis");
     m.def("block_matrix", &ed::block_matrix, py::arg("matrix"), py::arg("vectors"),
-          "The block of a sector in a set of adapted vectors");
-    m.def("eigenvalues", &ed::eigenvalues, py::arg("block"), py::arg("size"));
+          "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues", &ed::lowest_eigenvalues, py::arg("matrix"), py::arg("count"),
           py::arg("iterations") = 200, py::arg("tolerance") = 1e-10);
 }

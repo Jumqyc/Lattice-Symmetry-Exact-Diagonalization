@@ -26,6 +26,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from numpy.typing import NDArray
+import scipy.sparse as sp
 from scipy.sparse import csr_matrix
 
 from base import HilbertAction, LatticeAction, PointGroup
@@ -60,6 +61,39 @@ class Sector:
     def dim(self) -> int:
         '''Dimension of the sector.'''
         return int(self.basis.shape[1])
+
+
+def _orthonormalise(candidates: csr_matrix, tol: float = 1e-8) -> csr_matrix:
+    '''
+    Orthonormal sparse basis of the span of the columns of *candidates*.
+
+    Modified Gram-Schmidt, two passes, column by column: only the columns
+    themselves are ever held, so nothing of the size of the space is formed.
+    A column that is dependent on the accepted ones to within *tol* is dropped,
+    so the result has the rank of the input.
+
+    Args:
+        candidates: ``(n, k)`` sparse matrix whose columns span the subspace.
+        tol: threshold below which a residual column counts as dependent.
+    Returns:
+        An ``(n, r)`` CSR matrix with orthonormal columns.
+    '''
+    accepted: list = []
+    for j in range(candidates.shape[1]):
+        column = candidates[:, [j]].tocsc()
+        if column.nnz == 0:
+            continue
+        for _ in range(2):
+            if accepted:
+                basis = sp.hstack(accepted, format='csc')
+                column = column - basis @ (basis.conj().T @ column)
+        norm = float(np.sqrt(np.sum(np.abs(column.data) ** 2)))
+        if norm < tol:
+            continue
+        accepted.append(column / norm)
+    if not accepted:
+        return csr_matrix((candidates.shape[0], 0), dtype=complex)
+    return sp.hstack(accepted, format='csr')
 
 
 class Model:
@@ -518,16 +552,24 @@ class Model:
         moved = csr_matrix((coo.data * np.array([phase_of[r] for r in coo.row]),
                             ([row_of[r] for r in coo.row], coo.col)),
                            shape=B.shape, dtype=complex)
-        G = (B.conj().T @ moved).toarray()
+        G = (B.conj().T @ moved).tocsc()
 
         dim = B.shape[1]
         act = np.empty(dim, dtype=int)
         phase = np.empty(dim, dtype=complex)
         for x in range(dim):
-            column = G[:, x]
-            act[x] = int(np.argmax(np.abs(column)))
-            phase[x] = column[act[x]]
-            rest = np.linalg.norm(np.delete(column, act[x]))
+            start, stop = int(G.indptr[x]), int(G.indptr[x + 1])
+            values = G.data[start:stop]
+            if values.size == 0:
+                raise ValueError(
+                    "A group operation annihilates a momentum sector vector; it is not "
+                    "in the little group of the momentum.")
+            chosen = int(np.argmax(np.abs(values)))
+            act[x] = int(G.indices[start + chosen])
+            phase[x] = values[chosen]
+            # the weight left on the other columns, summed from the stored entries
+            # themselves: subtracting squares would turn a rounding error into 1e-8
+            rest = float(np.sqrt(np.sum(np.abs(np.delete(values, chosen)) ** 2)))
             if rest > 1e-8 or abs(phase[x]) < 1e-8:
                 raise ValueError(
                     "A group operation does not act on the momentum sector as a phased "
@@ -571,15 +613,53 @@ class Model:
             A complex ``(dim, m_alpha)`` matrix with orthonormal columns.
         '''
         d_alpha = lg.irrep_dim(alpha)
-        # the projector is a sum of |G_k| phased permutations, i.e. cheap to
-        # write down; its eigenvectors with eigenvalue one are the sector
-        projector = np.zeros((dim, dim), dtype=complex)
-        columns = np.arange(dim)
-        for (a, phi), op in zip(actions, ops):
-            projector[a, columns] += (np.conj(lg.character(alpha, op))
-                                      * d_alpha / len(actions)) * phi
-        eigenvalues, eigenvectors = np.linalg.eigh(projector)
-        return eigenvectors[:, eigenvalues > 0.5]
+        groups = len(actions)
+        if groups == 0:
+            raise ValueError("the little group has no elements to project with")
+        # the projector commutes with the little group, so it does not mix the
+        # orbits of the sector columns: projecting one orbit at a time keeps
+        # every object of the size of the orbit
+        seen = np.zeros(dim, dtype=bool)
+        blocks = []
+        for first in range(dim):
+            if seen[first]:
+                continue
+            orbit, stack = [], [first]
+            seen[first] = True
+            while stack:
+                x = stack.pop()
+                orbit.append(x)
+                for act, _ in actions:
+                    y = int(act[x])
+                    if not seen[y]:
+                        seen[y] = True
+                        stack.append(y)
+            orbit.sort()
+            local = {column: position for position, column in enumerate(orbit)}
+            rows, cols, data = [], [], []
+            for j, x in enumerate(orbit):
+                terms: dict[int, complex] = {}
+                for (act, phase), op in zip(actions, ops):
+                    target = local[int(act[x])]
+                    terms[target] = terms.get(target, 0.0) + (
+                        np.conj(lg.character(alpha, op)) * d_alpha / groups * phase[x])
+                for i, value in terms.items():
+                    if abs(value) < 1e-14:
+                        continue
+                    rows.append(i)
+                    cols.append(j)
+                    data.append(value)
+            candidates = csr_matrix((data, (rows, cols)),
+                                    shape=(len(orbit), len(orbit)), dtype=complex)
+            local_basis = _orthonormalise(candidates)
+            if local_basis.shape[1] == 0:
+                continue
+            coo = local_basis.tocoo()
+            blocks.append(csr_matrix((coo.data, ([orbit[i] for i in coo.row], coo.col)),
+                                     shape=(dim, local_basis.shape[1]), dtype=complex))
+        if not blocks:
+            return csr_matrix((dim, 0), dtype=complex)
+        return sp.hstack(blocks, format='csr')
 
     def _parity_basis(self, fmat: np.ndarray, s: int) -> np.ndarray:
         '''
@@ -592,9 +672,13 @@ class Model:
             A complex ``(m, m_s)`` matrix with orthonormal columns, to be
             composed with the sector basis.
         '''
-        projector = 0.5 * (np.eye(fmat.shape[0], dtype=complex) + s * fmat)
-        eigenvalues, eigenvectors = np.linalg.eigh(projector)
-        return eigenvectors[:, eigenvalues > 0.5]
+        size = fmat.shape[0]
+        if size == 0:
+            return csr_matrix((0, 0), dtype=complex)
+        # the parity subspace is the range of (1 + s F)/2, which is spanned by
+        # the columns of (1 + s F): sparse, and orthonormalized in place
+        candidates = (sp.identity(size, dtype=complex, format='csr') + s * fmat).tocsr()
+        return _orthonormalise(candidates)
 
     def _spin_flip_action(self) -> MonomialAction:
         '''
@@ -646,7 +730,7 @@ class Model:
             reps, B, state2col = self._momentum_basis(k, states, s2i)
             if not reps:
                 continue
-            H_k = (B.conj().T @ (H_sym @ B)).toarray()
+            H_k = (B.conj().T @ (H_sym @ B)).tocsr()
             lg, _ = self.little_group(k)
             ops = list(lg)
             fact = (self._sector_action(self._spin_flip_action(), states, s2i, state2col, B)
@@ -657,28 +741,30 @@ class Model:
                 for op in ops]
             irreps = ['A'] if len(ops) == 1 else lg.all_irrps()
             for alpha in irreps:
-                Q = (np.eye(len(reps), dtype=complex) if len(ops) == 1
+                Q = (sp.identity(len(reps), dtype=complex, format='csr') if len(ops) == 1
                      else self._isotypic_basis(lg, alpha, ops, actions, len(reps)))
                 if Q.shape[1] == 0:
                     continue
-                H_a = Q.conj().T @ (H_k @ Q)
+                H_a = (Q.conj().T @ (H_k @ Q)).tocsr()
                 # the spin flip commutes with the whole symmetry group, so it
                 # acts inside the alpha sector; its matrix there follows from
                 # its (phased) permutation of the sector basis
                 fmat = None
                 if spin_flip:
-                    pfq = np.zeros_like(Q)
-                    pfq[fact[0], :] = fact[1][:, None] * Q
-                    fmat = Q.conj().T @ pfq
+                    coo = Q.tocoo()
+                    permuted = csr_matrix((coo.data * np.asarray(fact[1])[coo.row],
+                                           (np.asarray(fact[0])[coo.row], coo.col)),
+                                          shape=Q.shape, dtype=complex)
+                    fmat = (Q.conj().T @ permuted).tocsr()
                 for s in ((None,) if not spin_flip else (1, -1)):
-                    R = (np.eye(Q.shape[1], dtype=complex) if s is None
-                         else self._parity_basis(fmat, s))
-                    if R.shape[1] == 0:
+                    R = (None if s is None else self._parity_basis(fmat, s))
+                    if R is not None and R.shape[1] == 0:
                         continue
                     key = (k, alpha, s)
-                    sectors[key] = Sector(
-                        key=key, basis=csr_matrix(B @ (Q @ R)),
-                        hamiltonian=csr_matrix(R.conj().T @ (H_a @ R)))
+                    basis = B @ Q if R is None else B @ (Q @ R)
+                    block = H_a if R is None else (R.conj().T @ (H_a @ R)).tocsr()
+                    sectors[key] = Sector(key=key, basis=basis.tocsr(),
+                                          hamiltonian=block.tocsr())
         return sectors
 
     def _action_for(self, op: np.ndarray) -> MonomialAction:

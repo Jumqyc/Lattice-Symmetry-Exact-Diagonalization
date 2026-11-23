@@ -61,15 +61,30 @@ struct SectorVectors {
  * @param characters chi_alpha of the irrep, one per element of *actions*.
  * @param dim dimension d_alpha of the irrep.
  * @param column_count number of columns of the sector.
- * @detail For every orbit, the projector (d_alpha/|G|) sum_r chi*_alpha(r) U(r)
- *         is built on the orbit (orbit x orbit) and diagonalised; the
- *         eigenvectors with eigenvalue one are the adapted vectors.  The result
- *         is orthonormal by construction and every vector lives on one orbit.
+ * @detail For every orbit the projected basis vectors (d_alpha/|G|) sum_r
+ *         chi*_alpha(r) U(r) e_x are formed and orthonormalized in place; the
+ *         image of the projector is spanned by them, so this is an orthonormal
+ *         basis of the alpha-isotypic component of the orbit.  The work is done
+ *         on the size of the orbit, and the dimension that comes out is
+ *         compared against the trace of the projector, which the character
+ *         fixes: a mismatch means the action and the character table disagree.
  * @short Orthonormal basis of the alpha-isotypic subspace.
+ * @throws std::runtime_error if the orbit's rank is not the one the character
+ *         predicts.
  */
 SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,
                              int dim, int column_count);
+
+/**
+ * @param column_count number of columns of the sector.
+ * @detail The adapted set is the sector itself: one vector per column, with
+ *         unit weight.  It is what the isotypic basis degenerates to when the
+ *         little group is trivial, and it keeps the block assembly on the same
+ *         path as every other sector instead of special-casing it.
+ * @short The sector basis itself, as a SectorVectors.
+ */
+SectorVectors identity_vectors(int column_count);
 
 /**
  * @param hamiltonian the Hamiltonian in the computational basis.
@@ -83,23 +98,17 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
 SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseColumns& columns);
 
 /**
- * @param matrix the Hamiltonian of a sector.
+ * @param matrix the Hamiltonian of a sector, in the sector basis.
  * @param vectors an orthonormal set of sector vectors.
- * @detail ``V^T H V``, returned dense because the block is what the
- *         eigensolver consumes.  The cost is the number of non-zeros of the
- *         sector Hamiltonian times the number of vectors.
- * @short The Hamiltonian block in the adapted basis.
- * @return Column-major dense block, ``vectors.vectors()`` square.
+ * @detail ``V^T H V`` as a sparse matrix: both factors are sparse, the product
+ *         is accumulated column by column, and every vector of *vectors* lives
+ *         on one little-group orbit, so the block is as sparse as the sector
+ *         Hamiltonian restricted to those orbits.  Nothing of the size of the
+ *         sector is allocated on the way.
+ * @short The Hamiltonian block in the adapted basis, sparse.
+ * @return A CSR matrix of side ``vectors.vectors()``.
  */
-std::vector<Complex> block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors);
-
-/**
- * @param block column-major dense Hermitian block.
- * @param size side of the block.
- * @detail Dense self-adjoint eigenvalues, ascending; the small-block path.
- * @short All eigenvalues of a dense Hermitian block.
- */
-std::vector<double> eigenvalues(const std::vector<Complex>& block, int size);
+SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors);
 
 /**
  * @param matrix a sparse Hermitian matrix.
@@ -109,15 +118,18 @@ std::vector<double> eigenvalues(const std::vector<Complex>& block, int size);
  * @param tolerance convergence threshold on the residual.
  * @detail Lanczos with full reorthogonalisation, which is what makes it
  *         stable for clustered spectra at the price of storing ``iterations``
- *         vectors.  A single-vector recursion resolves *distinct* eigenvalues
- *         only: an exactly degenerate level contributes one Ritz vector, not
- *         one per copy.  Multiplicities therefore have to be read elsewhere --
- *         from the dense solver for a block that fits, or from the character
- *         trace formula -- and the caller must not assume that the returned
- *         values are the k lowest counting multiplicity.  Every returned value
- *         is checked against its residual ``|H x - lambda x|``; the recurrence
- *         is not allowed to hand back an unconverged Ritz value, which is a
- *         number between two true levels and the eigenvalue of nothing.
+ *         vectors.  The tridiagonal recurrence is kept as its two diagonals: the
+ *         Ritz values come from bisection on the inertia count of ``T - x`` and
+ *         the residual of a Ritz pair is the last component of its eigenvector
+ *         times the first neglected off-diagonal, so no matrix of the size of
+ *         the recurrence is formed.  A single-vector recursion resolves
+ *         *distinct* eigenvalues only: an exactly degenerate level contributes
+ *         one Ritz vector, not one per copy.  Multiplicities therefore have to be
+ *         read elsewhere, and the caller must not assume that the returned values
+ *         are the k lowest counting multiplicity.  Every returned value is
+ *         checked against its residual ``|H x - lambda x|``; the recurrence is
+ *         not allowed to hand back an unconverged Ritz value, which is a number
+ *         between two true levels and the eigenvalue of nothing.
  * @short Lowest eigenvalues of a sparse Hermitian matrix.
  * @throws std::runtime_error if a requested Ritz value is not converged.
  */

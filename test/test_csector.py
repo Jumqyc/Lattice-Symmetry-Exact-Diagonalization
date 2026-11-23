@@ -184,6 +184,7 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
 
     worst_dim = 0
     worst_energy = 0.0
+    worst_block = 0.0
     checked = 0
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
@@ -204,19 +205,32 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
                                              columns.columns())
             if vectors.vectors() == 0:
                 continue
-            block = _edkern.block_matrix(sector_hamiltonian, vectors)
-            energies = np.sort(np.asarray(_edkern.eigenvalues(block, vectors.vectors())))
+            # the block comes back sparse; the dense matrix it stands for is
+            # built here, in the test, and diagonalised with numpy
+            block = to_scipy(_edkern.block_matrix(sector_hamiltonian, vectors))
+            energies = np.sort(np.linalg.eigvalsh(block.toarray()))
             reference_sector = reference.get((k, alpha, None))
             want = (np.sort(np.linalg.eigvalsh(reference_sector.hamiltonian.toarray()))
                     if reference_sector is not None else np.array([]))
             worst_dim = max(worst_dim, abs(len(energies) - len(want)))
+            # the sparse block against V^T H_k V formed densely from the same
+            # vectors: an oracle for block_matrix that does not reuse its code
+            dense_vectors = np.zeros((columns.columns(), vectors.vectors()), dtype=complex)
+            for c in range(vectors.vectors()):
+                for a in range(vectors.start[c], vectors.start[c + 1]):
+                    dense_vectors[vectors.columns[a], c] = vectors.data[a]
+            dense_block = (dense_vectors.conj().T
+                           @ (to_scipy(sector_hamiltonian).toarray() @ dense_vectors))
+            worst_block = max(worst_block,
+                              float(np.max(np.abs(block.toarray() - dense_block))))
             if len(want):
                 worst_energy = max(worst_energy, float(np.max(np.abs(energies - want))))
             checked += len(energies)
-    ok = worst_dim == 0 and worst_energy < tol
+    ok = worst_dim == 0 and worst_energy < tol and worst_block < tol
     if verbose:
         print(f"  {'✓' if ok else 'FAIL'}  {label} sectors: {checked} eigenvalues over all "
-              f"(k, alpha), dimension mismatch {worst_dim}, max |dE| {worst_energy:.1e}")
+              f"(k, alpha), dimension mismatch {worst_dim}, max |dE| {worst_energy:.1e}, "
+              f"|block - V^T H_k V| {worst_block:.1e}")
     return ok
 
 
