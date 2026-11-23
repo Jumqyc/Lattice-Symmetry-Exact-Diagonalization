@@ -448,17 +448,19 @@ std::vector<double> lowest_eigenvalues(const SparseMatrix& matrix, int count,
     alpha.resize(steps);
     if (steps > 1) beta.resize(steps - 1);
 
-    // spectral bounds from the Gershgorin discs of the tridiagonal
-    double low = alpha[0];
-    double high = alpha[0];
-    double width = 0.0;
+    // Spectral bounds from the Gershgorin discs of the tridiagonal.  Every row
+    // has two off-diagonal entries except the first and the last, so the bound
+    // is the row sum and not a single beta: a bracket that cuts off the two
+    // lowest levels makes the bisection converge to the edge of the bracket and
+    // report a value that is not an eigenvalue at all.
+    double low = alpha[0] - std::abs(beta.empty() ? 0.0 : beta[0]);
+    double high = alpha[steps - 1] + (steps > 1 ? std::abs(beta[steps - 2]) : 0.0);
     for (int i = 0; i < steps; ++i) {
-        low = std::min(low, alpha[i]);
-        high = std::max(high, alpha[i]);
+        const double left = i > 0 ? std::abs(beta[i - 1]) : 0.0;
+        const double right = i + 1 < steps ? std::abs(beta[i]) : 0.0;
+        low = std::min(low, alpha[i] - left - right);
+        high = std::max(high, alpha[i] + left + right);
     }
-    for (int i = 0; i + 1 < steps; ++i) width = std::max(width, beta[i]);
-    low -= width;
-    high += width;
     const double resolution = (high - low) * 1e-15;
 
     // the lowest Ritz values, by bisection on the inertia count: the tridiagonal
