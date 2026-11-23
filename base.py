@@ -69,10 +69,6 @@ class PointGroup(ABC):
 
     # ── derived quantities ───────────────────────────────────────────────
 
-    def order(self) -> int:
-        '''Number of operations of the group.'''
-        return len(list(self))
-
     def identity(self) -> np.ndarray:
         '''The identity operation of the group.'''
         for op in self:

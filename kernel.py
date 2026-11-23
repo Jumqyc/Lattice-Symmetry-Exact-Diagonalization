@@ -28,16 +28,6 @@ if TYPE_CHECKING:                        # pragma: no cover
     from ed import Model
 
 
-def available() -> bool:
-    '''
-    Whether the compiled kernel can be imported.
-
-    Returns:
-        True if ``_edkern`` is importable.
-    '''
-    return _edkern is not None
-
-
 def require() -> None:
     '''
     Raise if the kernel is missing, with the command that builds it.

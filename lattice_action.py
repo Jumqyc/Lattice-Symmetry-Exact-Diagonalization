@@ -404,8 +404,3 @@ class AffineAction(LatticeAction):
     def label_action(self, supercell_vectors: np.ndarray) -> np.ndarray:
         '''Integer action on the momentum labels, see :func:`label_action`.'''
         return label_action(self.rotation, supercell_vectors)
-
-    def preserves_momentum(self, k: tuple[int, ...], supercell_vectors: np.ndarray,
-                           Nvec: np.ndarray) -> bool:
-        '''Whether this operation leaves the momentum label *k* invariant.'''
-        return preserves_momentum(self.rotation, k, supercell_vectors, Nvec)

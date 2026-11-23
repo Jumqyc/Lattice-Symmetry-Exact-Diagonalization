@@ -29,7 +29,7 @@ from scipy.sparse import csr_matrix
 
 import kernel
 
-from base import HilbertAction, LatticeAction, PointGroup
+from base import LatticeAction, PointGroup
 from hilbert_action import MonomialAction, Permutation, extract_monomial, from_lattice_action
 from lattice_action import AffineAction, Lattice, TranslationGroup, little_group
 from representation import TrivialGroup
