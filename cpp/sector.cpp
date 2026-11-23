@@ -190,21 +190,17 @@ std::vector<Complex> block_matrix(const SparseMatrix& matrix, const SectorVector
     const int m = vectors.vectors();
     if (m == 0) return {};
 
-    // V^T H V, one column at a time: H applied to the vector, then read back on
-    // the support of every vector.  A dense scratch vector of the size of the
-    // sector is the cheapest way to say this unambiguously -- the previous
-    // hand-written merge of two sorted lists was wrong for sectors whose rows
-    // are hit several times.
+    // V^T H V, one column at a time: scatter the column of V into a dense
+    // sector vector, multiply, then overlap with every row of V.  The scatter
+    // must go through the matrix's own rows -- walking the rows of H while
+    // reading back on the support of the vector computes H^T v, not H v.
     std::vector<Complex> out(static_cast<std::size_t>(m) * m, Complex{0.0, 0.0});
-    std::vector<Complex> applied(static_cast<std::size_t>(matrix.cols));
+    std::vector<Complex> column(static_cast<std::size_t>(matrix.cols), Complex{0.0, 0.0});
     for (int c = 0; c < m; ++c) {
-        std::fill(applied.begin(), applied.end(), Complex{0.0, 0.0});
-        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
-            const int source = vectors.columns[a];
-            const Complex weight = vectors.data[a];
-            for (int b = matrix.indptr[source]; b < matrix.indptr[source + 1]; ++b)
-                applied[matrix.indices[b]] += matrix.data[b] * weight;
-        }
+        std::fill(column.begin(), column.end(), Complex{0.0, 0.0});
+        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a)
+            column[vectors.columns[a]] = vectors.data[a];
+        const std::vector<Complex> applied = multiply(matrix, column);
         for (int r = 0; r < m; ++r) {
             Complex sum{0.0, 0.0};
             for (int a = vectors.start[r]; a < vectors.start[r + 1]; ++a)
