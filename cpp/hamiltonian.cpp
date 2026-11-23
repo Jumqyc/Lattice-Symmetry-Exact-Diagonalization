@@ -11,38 +11,85 @@ namespace ed {
 namespace {
 
 /**
- * @detail Applies one term to a state: every site of the term replaces its
- *         local index by one of the ``out`` values, with the product of the
- *         coefficients.  The recursion walks the term's sites and carries the
- *         packed word, so no temporary state vector is built.
- * @short Add the images of one term to ``out``.
+ * @detail The recursion that replaces, site by site, the local index of the
+ *         state by one of the ``out`` values of the term.  It is a plain
+ *         function and not a ``std::function``: that one allocates on every
+ *         call, and it is called once per (state, term), which at five by five
+ *         is a hundred million allocations.
+ * @short Carry one branch of the term application to the next site.
  */
-void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word,
-                std::vector<std::pair<std::uint64_t, Complex>>& out)
+void walk_term(const Basis& basis, const CouplingTerm& term, const std::vector<int>& digits,
+               std::size_t index, std::uint64_t image, Complex amplitude,
+               std::vector<std::pair<int, Complex>>& out)
 {
+    if (index == term.sites.size()) {
+        const int target = basis.index(image);
+        if (target >= 0) out.emplace_back(target, amplitude);
+        return;
+    }
     const int bits = basis.bits();
     const int sites = basis.sites();
-    const std::vector<int> digits = basis.unpack(word);
-    std::function<void(std::size_t, std::uint64_t, Complex)> walk =
-        [&](std::size_t index, std::uint64_t image, Complex amplitude) {
-            if (index == term.sites.size()) {
-                out.emplace_back(image, amplitude);
-                return;
-            }
-            const int site = term.sites[index];
-            const LocalTerm& local = term.local[index];
-            for (std::size_t entry = 0; entry < local.in.size(); ++entry) {
-                if (local.in[entry] != digits[site]) continue;
-                const std::uint64_t shifted =
-                    static_cast<std::uint64_t>(local.out[entry]) << (bits * (sites - 1 - site));
-                const std::uint64_t mask = ((1ull << bits) - 1ull) << (bits * (sites - 1 - site));
-                walk(index + 1, (image & ~mask) | shifted, amplitude * local.coeff[entry]);
-            }
-        };
-    walk(0, word, Complex{1.0, 0.0});
+    const int site = term.sites[index];
+    const LocalTerm& local = term.local[index];
+    const int shift = bits * (sites - 1 - site);
+    const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
+    for (std::size_t entry = 0; entry < local.in.size(); ++entry) {
+        if (local.in[entry] != digits[site]) continue;
+        const std::uint64_t shifted = static_cast<std::uint64_t>(local.out[entry]) << shift;
+        walk_term(basis, term, digits, index + 1, (image & ~mask) | shifted,
+                  amplitude * local.coeff[entry], out);
+    }
 }
 
 }  // namespace
+
+void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word,
+                const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out)
+{
+    // One- and two-site terms are almost all of a lattice model, and the
+    // recursion costs more than the arithmetic it carries for them: the two
+    // cases are written out, the rest falls back to the walk.
+    const int bits = basis.bits();
+    const int sites = basis.sites();
+    if (term.sites.size() == 1) {
+        const int site = term.sites[0];
+        const LocalTerm& local = term.local[0];
+        const int shift = bits * (sites - 1 - site);
+        const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
+        for (std::size_t entry = 0; entry < local.in.size(); ++entry) {
+            if (local.in[entry] != digits[site]) continue;
+            const std::uint64_t shifted = static_cast<std::uint64_t>(local.out[entry]) << shift;
+            const int target = basis.index((word & ~mask) | shifted);
+            if (target >= 0) out.emplace_back(target, local.coeff[entry]);
+        }
+        return;
+    }
+    if (term.sites.size() == 2) {
+        const int first = term.sites[0];
+        const int second = term.sites[1];
+        const LocalTerm& local_first = term.local[0];
+        const LocalTerm& local_second = term.local[1];
+        const int shift_first = bits * (sites - 1 - first);
+        const int shift_second = bits * (sites - 1 - second);
+        const std::uint64_t mask_first = ((1ull << bits) - 1ull) << shift_first;
+        const std::uint64_t mask_second = ((1ull << bits) - 1ull) << shift_second;
+        for (std::size_t a = 0; a < local_first.in.size(); ++a) {
+            if (local_first.in[a] != digits[first]) continue;
+            const std::uint64_t once =
+                ((word & ~mask_first) | (static_cast<std::uint64_t>(local_first.out[a]) << shift_first));
+            for (std::size_t b = 0; b < local_second.in.size(); ++b) {
+                if (local_second.in[b] != digits[second]) continue;
+                const std::uint64_t twice = ((once & ~mask_second)
+                                             | (static_cast<std::uint64_t>(local_second.out[b])
+                                                << shift_second));
+                const int target = basis.index(twice);
+                if (target >= 0) out.emplace_back(target, local_first.coeff[a] * local_second.coeff[b]);
+            }
+        }
+        return;
+    }
+    walk_term(basis, term, digits, 0, word, Complex{1.0, 0.0}, out);
+}
 
 SparseMatrix assemble(const Basis& basis, const std::vector<CouplingTerm>& couplings)
 {
@@ -52,20 +99,18 @@ SparseMatrix assemble(const Basis& basis, const std::vector<CouplingTerm>& coupl
     matrix.cols = n;
     matrix.indptr.assign(n + 1, 0);
 
-    std::vector<std::pair<std::uint64_t, Complex>> images;
-    std::vector<std::pair<int, Complex>> column;
+    std::vector<std::pair<int, Complex>> column;    // (column index, value) of the row
+    std::vector<int> digits;                        // reused: one allocation in total
     for (int i = 0; i < n; ++i) {
-        const std::uint64_t word = basis.state(i);
-        images.clear();
-        for (const CouplingTerm& term : couplings) apply_term(basis, term, word, images);
-
-        // accumulate equal images, then order the row by column index so that
-        // the CSR form is canonical and two implementations can be compared
+        // the state is unpacked once and every term reuses the digits: unpacking
+        // per term would touch the whole state once per term
+        basis.unpack_into(basis.state(i), digits);
         column.clear();
-        for (const auto& entry : images) {
-            const int j = basis.index(entry.first);
-            if (j >= 0) column.emplace_back(j, entry.second);
-        }
+        for (const CouplingTerm& term : couplings)
+            apply_term(basis, term, basis.state(i), digits, column);
+
+        // order the row by column index so that the CSR form is canonical and
+        // two implementations can be compared
         std::sort(column.begin(), column.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
         std::size_t k = 0;

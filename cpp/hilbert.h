@@ -59,6 +59,13 @@ public:
      */
     std::vector<int> unpack(std::uint64_t word) const;
 
+    /**
+     * @param word packed basis state.
+     * @param digits overwritten with the local index of every site.
+     * @short The same, without allocating: the caller keeps the buffer.
+     */
+    void unpack_into(std::uint64_t word, std::vector<int>& digits) const;
+
 private:
     void build_lookup();
 

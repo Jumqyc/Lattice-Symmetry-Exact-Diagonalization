@@ -104,9 +104,15 @@ int Basis::index(std::uint64_t word) const
 
 std::vector<int> Basis::unpack(std::uint64_t word) const
 {
-    std::vector<int> digits(sites_);
-    for (int i = 0; i < sites_; ++i) digits[i] = digit(word, i);
+    std::vector<int> digits;
+    unpack_into(word, digits);
     return digits;
+}
+
+void Basis::unpack_into(std::uint64_t word, std::vector<int>& digits) const
+{
+    digits.resize(static_cast<std::size_t>(sites_));
+    for (int i = 0; i < sites_; ++i) digits[i] = digit(word, i);
 }
 
 std::pair<std::uint64_t, Complex> apply(const Basis& basis, const MonomialAction& action,

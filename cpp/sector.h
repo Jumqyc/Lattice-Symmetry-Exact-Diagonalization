@@ -97,6 +97,23 @@ SectorVectors identity_vectors(int column_count);
 SparseMatrix sector_hamiltonian(const SparseMatrix& hamiltonian, const SparseColumns& columns);
 
 /**
+ * @param basis the computational basis.
+ * @param couplings the terms of the Hamiltonian.
+ * @param columns the momentum-adapted basis.
+ * @detail The same product as below, with the Hamiltonian applied term by term
+ *         instead of read from a stored matrix: ``H B`` is accumulated column by
+ *         column from the images the terms produce, and the states are never
+ *         materialized as a matrix over the whole space.  The cost is
+ *         ``#states * #terms`` per sector instead of a walk over the nonzeros of
+ *         a stored Hamiltonian, which is the same order and one pass more often;
+ *         the memory is the size of the basis instead of the size of the
+ *         Hamiltonian, which is what makes a five-by-five lattice possible.
+ * @short ``B^T H B`` without assembling ``H``.
+ */
+SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
+                                const SparseColumns& columns);
+
+/**
  * @param matrix the Hamiltonian of a sector, in the sector basis.
  * @param vectors an orthonormal set of sector vectors.
  * @detail ``V^T H V`` as a sparse matrix: both factors are sparse, the product

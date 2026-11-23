@@ -86,8 +86,16 @@ PYBIND11_MODULE(_edkern, m)
           "The sector basis itself, for a trivial little group");
     m.def("isotypic_basis", &ed::isotypic_basis, py::arg("actions"), py::arg("characters"),
           py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
-    m.def("sector_hamiltonian", &ed::sector_hamiltonian, py::arg("hamiltonian"),
-          py::arg("columns"), "The Hamiltonian in a momentum-adapted basis");
+    m.def("sector_hamiltonian",
+          py::overload_cast<const ed::SparseMatrix&, const ed::SparseColumns&>(
+              &ed::sector_hamiltonian),
+          py::arg("hamiltonian"), py::arg("columns"),
+          "The Hamiltonian in a momentum-adapted basis, from a stored Hamiltonian");
+    m.def("sector_hamiltonian",
+          py::overload_cast<const ed::Basis&, const std::vector<ed::CouplingTerm>&,
+                            const ed::SparseColumns&>(&ed::sector_hamiltonian),
+          py::arg("basis"), py::arg("couplings"), py::arg("columns"),
+          "The Hamiltonian in a momentum-adapted basis, term by term");
     m.def("block_matrix", &ed::block_matrix, py::arg("matrix"), py::arg("vectors"),
           "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues",

@@ -168,6 +168,36 @@ def test_hamiltonian(model: Model, Sztot, label: str, verbose: bool = True) -> b
     return ok
 
 
+def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-12,
+                      verbose: bool = True) -> bool:
+    '''
+    The sector Hamiltonian built from the couplings agrees with the stored one.
+
+    The library path never assembles the Hamiltonian: it applies the terms to
+    the columns of the momentum basis directly.  This compares that product with
+    the same object built from a stored matrix, sector by sector.
+    '''
+    basis = cxx_basis(model, Sztot)
+    couplings = cxx_couplings(model)
+    translations = [cxx_translation(model, t) for t in model.tr_group]
+    stored = _edkern.symmetrise(_edkern.assemble(basis, couplings), basis,
+                                cxx_group_actions(model))
+    worst = 0.0
+    for k in model.tr_group.all_momenta():
+        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+        columns = _edkern.momentum_basis(basis, translations, characters)
+        if columns.columns() == 0:
+            continue
+        from_matrix = to_scipy(_edkern.sector_hamiltonian(stored, columns))
+        from_terms = to_scipy(_edkern.sector_hamiltonian(basis, couplings, columns))
+        worst = max(worst, float(abs(from_matrix - from_terms).max()))
+    ok = worst < tol
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  {label} term-by-term: sector Hamiltonians from "
+              f"the couplings, max difference {worst:.1e}")
+    return ok
+
+
 def test_symmetrise(model: Model, Sztot, label: str, tol: float = 1e-12,
                     verbose: bool = True) -> bool:
     '''
@@ -322,6 +352,7 @@ def main():
         print(f'── {label} ──')
         test_hamiltonian(model, sztot, label)
         test_symmetrise(model, sztot, label)
+        test_term_by_term(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
         print()
