@@ -382,29 +382,32 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
 
 
 def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
-                 threads: int = 0) -> dict:
+                 spin_flip: bool = False, threads: int = 0) -> dict:
     '''
-    The lowest levels of every momentum, matrix-free.
+    The lowest levels of every sector, without forming a matrix.
 
-    No momentum basis, no sector Hamiltonian and no block is formed: a state is
-    labelled by (orbit, translation) once, and every momentum's product is applied
-    to vectors directly.  The price is that the product is paid at every step of
-    the recurrence instead of being read from a matrix, which is what a lattice too
-    large for the matrix can afford -- and what a lattice that fits should not use.
+    No momentum basis, no sector Hamiltonian and no block is built: the states are
+    labelled by their translation orbit once, the little group acts on those labels,
+    and the Hamiltonian of a sector is applied to vectors by expanding them onto the
+    orbits, applying the terms and projecting back.  The price is that the product
+    is paid at every step of the recurrence instead of being read from a matrix,
+    which is what a lattice too large for the matrix can afford.
 
     Args:
         model: the model.
-        count: how many levels per momentum.
+        count: how many levels per sector.
         sztot: total charge, or None for the whole space.
+        spin_flip: if True, resolve the spin-flip parity as well.
         threads: workers for the product; 0 means one per core.
     Returns:
-        A dict keyed by the momentum label of the eigenvalues, ascending.
+        A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
     '''
     require()
     basis = basis_of(model, sztot)
     terms = coupling_terms(model)
     translations = globals()["translations"](model)
-    orbits = _edkern.sector_map(basis, translations)   # the orbits do not depend on k
+    orbits = _edkern.sector_map(basis, translations)
+    spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     budget = max(200, 40 * count)
     out = {}
     for k in model.tr_group.all_momenta():
@@ -414,10 +417,29 @@ def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
         sector = _edkern.sector_subset(orbits, characters)
         if sector.orbits == 0:
             continue
-        product = (lambda vector: _edkern.sector_apply(basis, terms, sector, characters,
-                                                       vector, threads))
-        out[k] = np.asarray(_edkern.lowest_eigenvalues_free(
-            product, sector.orbits, min(count, sector.orbits), budget, 1e-10, threads))
+        little, _ = model.little_group(k)
+        ops = list(little)
+        if len(ops) == 1:
+            actions = [_identity_permutation(sector.orbits)]
+            irreps = [('A', 1, [1.0 + 0.0j])]
+        else:
+            actions = [_edkern.action_on_orbits(
+                basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]))
+                for op in ops]
+            irreps = [(alpha, little.irrep_dim(alpha),
+                       [little.character(alpha, op) for op in ops])
+                      for alpha in little.all_irrps()]
+        flip = (_edkern.action_on_orbits(basis, sector, spin) if spin_flip else None)
+        for alpha, dim, chars in irreps:
+            for parity in ((None,) if not spin_flip else (1, -1)):
+                vectors = _isotypic(actions, chars, flip, parity, dim, sector.orbits, threads)
+                if vectors.vectors() == 0:
+                    continue
+                ask = min(count, vectors.vectors())
+                out[(k, alpha, parity)] = np.asarray(_edkern.lowest_eigenvalues_free(
+                    lambda vector: _edkern.sector_apply_block(
+                        basis, terms, sector, characters, vectors, vector, threads),
+                    vectors.vectors(), ask, max(budget, 40 * ask), 1e-10, threads))
     return out
 
 

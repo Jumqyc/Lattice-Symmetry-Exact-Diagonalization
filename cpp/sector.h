@@ -180,4 +180,41 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
                                   const SectorMap& sector, const std::vector<Complex>& characters,
                                   const std::vector<Complex>& vector, int threads = 0);
 
+/**
+ * @param basis the computational basis.
+ * @param sector the orbit labels of a momentum sector.
+ * @param action one band of the little group, as a monomial action on states.
+ * @detail The action of a little-group element on the *orbits*: the label a state
+ *         belongs to is taken to the label its image belongs to, with the phase the
+ *         action gives it.  The phase is the same for every state of an orbit,
+ *         because the action commutes with translations, so one entry per orbit is
+ *         enough -- and with it the little-group projection needs no basis matrix.
+ * @short One little-group element acting on the orbit labels.
+ */
+PhasedPermutation action_on_orbits(const Basis& basis, const SectorMap& sector,
+                                   const MonomialAction& action);
+
+/**
+ * @param basis the computational basis.
+ * @param couplings the terms of the Hamiltonian.
+ * @param sector the orbit labels of the momentum sector.
+ * @param characters the character of the momentum at every translation.
+ * @param vectors the adapted vectors of one irreducible sector, as coefficients on
+ *        the orbits.
+ * @param vector the sector vector, one entry per adapted vector.
+ * @param threads how many workers to use; 0 means one per hardware thread.
+ * @detail ``V^T B^T H B V`` applied to a vector, with neither ``B V``, ``B^T H B``
+ *         nor the block written down: the vector is expanded into the states of the
+ *         adapted orbits, the Hamiltonian is applied term by term, and the result
+ *         is projected back.  The two state-space vectors that the expansion needs
+ *         are the only large objects.
+ * @short The Hamiltonian of one sector, applied matrix-free.
+ */
+std::vector<Complex> sector_apply_block(const Basis& basis,
+                                        const std::vector<CouplingTerm>& couplings,
+                                        const SectorMap& sector,
+                                        const std::vector<Complex>& characters,
+                                        const SectorVectors& vectors,
+                                        const std::vector<Complex>& vector, int threads = 0);
+
 }  // namespace ed

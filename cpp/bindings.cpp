@@ -98,6 +98,14 @@ PYBIND11_MODULE(_edkern, m)
           "Translated orbit labels of one momentum sector");
     m.def("sector_subset", &ed::sector_subset, py::arg("sector"), py::arg("characters"),
           "The same labels restricted to one momentum");
+    m.def("action_on_orbits", &ed::action_on_orbits, py::arg("basis"),
+          py::arg("sector"), py::arg("action"),
+          "One little-group element acting on the orbit labels");
+    m.def("sector_apply_block", &ed::sector_apply_block,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
+          py::arg("couplings"), py::arg("sector"), py::arg("characters"),
+          py::arg("vectors"), py::arg("vector"), py::arg("threads") = 0,
+          "The Hamiltonian of one sector, applied matrix-free");
     m.def("sector_apply", &ed::sector_apply,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("sector"), py::arg("characters"),
