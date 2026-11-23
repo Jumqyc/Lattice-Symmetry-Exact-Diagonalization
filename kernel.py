@@ -256,24 +256,110 @@ def _compose(first, second, count: int) -> '_edkern.PhasedPermutation':
     return _edkern.PhasedPermutation(act, phase)
 
 
+def _little_group(model: 'Model', columns, basis, k: tuple[int, ...], threads: int):
+    '''
+    The little group of one momentum, as actions on the sector's columns.
+
+    Args:
+        model: the model.
+        columns: the momentum basis of *k*.
+        basis: the computational basis.
+        k: the momentum label.
+        threads: workers for the actions.
+    Returns:
+        ``(actions, irreps)``: one action per little-group element -- the identity
+        alone when the group is trivial -- and one entry per irrep of it, as
+        ``(label, dimension, characters)``.
+    '''
+    little, _ = model.little_group(k)
+    ops = list(little)
+    if len(ops) == 1:
+        return [_identity_permutation(columns.columns())], [('A', 1, [1.0 + 0.0j])]
+    actions = [_edkern.sector_action(
+        columns, basis, monomial_of(model, model.hilbert[hilbert_index(model, op)]))
+        for op in ops]
+    irreps = [(alpha, little.irrep_dim(alpha),
+               [little.character(alpha, op) for op in ops]) for alpha in little.all_irrps()]
+    return actions, irreps
+
+
+def _isotypic(actions: list, characters: list, flip, parity, dim: int, count: int,
+              threads: int):
+    '''
+    The adapted vectors of one sector, with the spin flip folded in when asked.
+
+    Args:
+        actions: the little-group actions on the sector's columns.
+        characters: their characters in the irrep.
+        flip: the spin flip acting on the columns, or None.
+        parity: the eigenvalue of the spin flip, or None.
+        dim: dimension of the irrep.
+        count: number of columns of the sector.
+        threads: workers for the projection.
+    Returns:
+        The orthonormal adapted vectors.
+    '''
+    if parity is None:
+        return _edkern.isotypic_basis(actions, characters, dim, count, threads)
+    # the spin flip commutes with the whole group, so the resolution is the product
+    # irrep of G_k x Z_2: the elements are (r, 0) and (r, 1), and the characters are
+    # chi_alpha(r) and s chi_alpha(r)
+    both = list(actions) + [_compose(action, flip, count) for action in actions]
+    both_characters = list(characters) + [value * parity for value in characters]
+    return _edkern.isotypic_basis(both, both_characters, dim, count, threads)
+
+
+def _momentum_pieces(model: 'Model', basis, terms, translations, spin, spin_flip: bool,
+                     threads: int):
+    '''
+    One momentum at a time: its columns, its Hamiltonian and its sectors.
+
+    Args:
+        model: the model.
+        basis: the computational basis.
+        terms: the couplings in the kernel's representation.
+        translations: the translations as kernel actions.
+        spin: the spin flip as a kernel action, or None.
+        spin_flip: whether the spin flip is resolved.
+        threads: workers for the kernels.
+    Yields:
+        ``(columns, sector, pieces)``, where *pieces* is a list of
+        ``((k, alpha, s), vectors)``.
+    '''
+    for k in model.tr_group.all_momenta():
+        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+        columns = _edkern.momentum_basis(basis, translations, characters, threads)
+        count = columns.columns()
+        if count == 0:
+            continue
+        sector = _edkern.sector_hamiltonian(basis, terms, columns, threads)
+        actions, irreps = _little_group(model, columns, basis, k, threads)
+        flip = (_edkern.sector_action(columns, basis, spin) if spin_flip else None)
+        pieces = []
+        for alpha, dim, chars in irreps:
+            for parity in ((None,) if not spin_flip else (1, -1)):
+                vectors = _isotypic(actions, chars, flip, parity, dim, count, threads)
+                if vectors.vectors() == 0:
+                    continue
+                pieces.append(((k, alpha, parity), vectors))
+        yield columns, sector, pieces
+
+
 def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
             spin_flip: bool = False, threads: int = 0) -> dict:
     '''
-    The lowest levels of every sector, one sector at a time.
+    The lowest levels of every sector, one momentum at a time.
 
-    Nothing but the eigenvalues is kept: the momentum basis, the sector
-    Hamiltonian and the block are built for one momentum, solved, and dropped
-    before the next one starts.  The parallel work is inside the sector
-    Hamiltonian, whose columns are independent, so the memory does not depend on
-    how many sectors the model has -- which is what makes a five-by-five lattice
-    a matter of time rather than of memory.
+    Nothing but the eigenvalues is kept: the columns, the sector Hamiltonian and the
+    block are built for one momentum, solved, and dropped before the next one
+    starts.
 
     Args:
         model: the model.
         count: how many levels per sector.
         sztot: total charge, or None for the whole space.
         spin_flip: if True, resolve the spin-flip parity as well.
-        threads: workers for the sector Hamiltonian; 0 means one per core.
+        threads: workers for the kernels; 0 means one per core.
     Returns:
         A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
     '''
@@ -283,46 +369,15 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     translations = globals()["translations"](model)
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
-    for k in model.tr_group.all_momenta():
-        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters, threads)
-        columns_count = columns.columns()
-        if columns_count == 0:
-            continue
-        sector = _edkern.sector_hamiltonian(basis, terms, columns, threads)
-        little, _ = model.little_group(k)
-        ops = list(little)
-        if len(ops) == 1:
-            actions, irreps = [_identity_permutation(columns_count)], [('A', 1, [1.0 + 0.0j])]
-        else:
-            actions = [_edkern.sector_action(columns, basis,
-                                             monomial_of(model, model.hilbert[hilbert_index(model, op)]))
-                       for op in ops]
-            irreps = [(alpha, little.irrep_dim(alpha),
-                       [little.character(alpha, op) for op in ops])
-                      for alpha in little.all_irrps()]
-        flip = (_edkern.sector_action(columns, basis, spin) if spin_flip else None)
-        for alpha, dim, chars in irreps:
-            for s in ((None,) if not spin_flip else (1, -1)):
-                if s is None:
-                    use_actions, use_chars = actions, chars
-                else:
-                    use_actions = list(actions) + [_compose(action, flip, columns_count)
-                                                   for action in actions]
-                    use_chars = list(chars) + [value * s for value in chars]
-                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim,
-                                                columns_count, threads)
-                if vectors.vectors() == 0:
-                    continue
-                block = _edkern.block_matrix(sector, vectors, threads)
-                asked = min(count, vectors.vectors())
-                # a degenerate level needs one vector per copy, and the recurrence
-                # resolves the copies one cycle at a time, so the budget has to
-                # grow with what is asked for; a fixed two hundred steps converges
-                # the ground state and stalls on the fourth copy of it
-                budget = max(200, 40 * asked)
-                out[(k, alpha, s)] = np.asarray(
-                    _edkern.lowest_eigenvalues(block, asked, budget))
+    for _, sector, pieces in _momentum_pieces(model, basis, terms, translations, spin,
+                                              spin_flip, threads):
+        for key, vectors in pieces:
+            block = _edkern.block_matrix(sector, vectors, threads)
+            asked = min(count, vectors.vectors())
+            # a degenerate level needs one vector per copy, and the copies are
+            # resolved one cycle at a time, so the budget grows with the request
+            out[key] = np.asarray(
+                _edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
     return out
 
 
@@ -369,66 +424,32 @@ def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
 def sectors(model: 'Model', sztot: Optional[int] = None,
             spin_flip: bool = False) -> dict:
     '''
-    The whole decomposition, built by the kernel.
+    The whole decomposition, one momentum at a time.
+
+    The same walk as :func:`spectra`, except that the adapted vectors are kept
+    beside their block and the block is not diagonalized.
 
     Args:
         model: the model.
         sztot: total charge, or None for the whole space.
         spin_flip: if True, resolve the parity of the spin flip as well.
     Returns:
-        A dict keyed by ``(k, alpha, s)`` whose values are
-        ``(basis, block)``, both CSR matrices.  ``basis`` has the adapted
-        vectors as columns, in the computational basis; ``block`` is the
-        Hamiltonian between them.
+        A dict keyed by ``(k, alpha, s)`` of ``(basis, block)``, both CSR: the
+        adapted vectors as columns in the computational basis, and the Hamiltonian
+        between them.
     '''
     require()
     basis = basis_of(model, sztot)
     terms = coupling_terms(model)
     translations = globals()["translations"](model)
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
-
-    def one(k: tuple[int, ...]) -> dict:
-        '''Every sector that belongs to one momentum label.'''
-        part = {}
-        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters, _threads())
-        count = columns.columns()
-        if count == 0:
-            return part
-        sector = _edkern.sector_hamiltonian(basis, terms, columns)
-        little, _ = model.little_group(k)
-        ops = list(little)
-        identity = _identity_permutation(count)
-        if len(ops) == 1:
-            actions, irreps = [identity], [('A', 1, [1.0 + 0.0j])]
-        else:
-            actions = [_edkern.sector_action(columns, basis,
-                                             monomial_of(model, model.hilbert[hilbert_index(model, op)]))
-                       for op in ops]
-            irreps = [(alpha, little.irrep_dim(alpha),
-                       [little.character(alpha, op) for op in ops])
-                      for alpha in little.all_irrps()]
-        flip = (_edkern.sector_action(columns, basis, spin) if spin_flip else None)
-        # the spin flip commutes with the whole group, so the resolution is the
-        # product irrep of G_k x Z_2: the elements are (r, 0) and (r, 1), the
-        # characters are chi_alpha(r) and s chi_alpha(r), and the projector is
-        # the one the kernel already knows how to build
-        for alpha, dim, chars in irreps:
-            for s in ((None,) if not spin_flip else (1, -1)):
-                if s is None:
-                    use_actions, use_chars = actions, chars
-                else:
-                    use_actions = list(actions) + [_compose(action, flip, count)
-                                                   for action in actions]
-                    use_chars = list(chars) + [value * s for value in chars]
-                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim, count, _threads())
-                if vectors.vectors() == 0:
-                    continue
-                block = to_scipy(_edkern.block_matrix(sector, vectors, _threads()))
-                adapted = columns_to_scipy(columns, basis.size()) @ vectors_to_scipy(vectors, count)
-                part[(k, alpha, s)] = (adapted.tocsr(), block.tocsr())
-        return part
-
-    # one momentum at a time: the parallelism is inside a sector, so the peak here
-    # does not grow with the number of sectors
-    return {key: value for k in model.tr_group.all_momenta() for key, value in one(k).items()}
+    threads = _threads()
+    out = {}
+    for columns, sector, pieces in _momentum_pieces(model, basis, terms, translations,
+                                                    spin, spin_flip, threads):
+        for key, vectors in pieces:
+            block = to_scipy(_edkern.block_matrix(sector, vectors, threads))
+            adapted = (columns_to_scipy(columns, basis.size())
+                       @ vectors_to_scipy(vectors, columns.columns()))
+            out[key] = (adapted.tocsr(), block.tocsr())
+    return out
