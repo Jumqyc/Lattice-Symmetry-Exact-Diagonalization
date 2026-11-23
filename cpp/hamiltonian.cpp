@@ -176,7 +176,9 @@ std::vector<Complex> multiply(const SparseMatrix& matrix, const std::vector<Comp
             out[i] = sum;
         }
     };
-    if (workers == nullptr) rows(0, 0, matrix.rows);
+    // the rows are only worth spreading when the matrix has enough of them to pay
+    // for the handshake
+    if (workers == nullptr || matrix.nonzeros() < (1 << 16)) rows(0, 0, matrix.rows);
     else workers->run(matrix.rows, rows);
     return out;
 }

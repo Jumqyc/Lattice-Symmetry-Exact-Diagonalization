@@ -21,23 +21,27 @@ using MatrixVector = std::function<std::vector<Complex>(const std::vector<Comple
  * @param multiply the product, on vectors of length *dimension*.
  * @param dimension length of the vectors the product takes.
  * @param count how many eigenvalues, smallest first.
- * @param iterations Arnoldi dimension; the three-term recurrence needs enough
- *        vectors to resolve a degenerate low-lying spectrum.
+ * @param iterations the budget, in steps of the recurrence, over all cycles.
  * @param tolerance convergence threshold on the residual, relative to the
  *        magnitude of the value.
- * @detail Lanczos with full reorthogonalisation, which is what makes it stable
- *         for clustered spectra at the price of storing ``iterations`` vectors.
- *         The tridiagonal recurrence is kept as its two diagonals: the Ritz
- *         values come from bisection on the inertia count of ``T - x``, and the
- *         residual of a Ritz pair is the last component of its eigenvector times
- *         the first neglected off-diagonal, obtained by inverse iteration on the
- *         tridiagonal.  No matrix of the size of the recurrence is formed.  The
- *         residual is tested every twenty steps and the recurrence stops as soon
- *         as it has converged, because a step costs more than the one before it.
- *         A single-vector recursion resolves *distinct* eigenvalues only: an
- *         exactly degenerate level contributes one Ritz vector, not one per copy,
- *         so the caller must not assume that the returned values are the k lowest
- *         counting multiplicity.
+ * @param workers how many threads to use; 0 means one per hardware thread.
+ * @detail Lanczos with full reorthogonalisation and a thick restart.
+ *         Full reorthogonalisation is what keeps the recurrence trustworthy on
+ *         the degenerate spectrum a symmetry sector always has, but it reads
+ *         every stored vector at every step, so a step gets slower as the
+ *         recurrence grows and the basis stops fitting in cache long before it
+ *         stops fitting in memory.  The recurrence therefore runs in short
+ *         cycles: at the end of one, the wanted Ritz vectors and a few extra are
+ *         kept, the rest are dropped, and the run continues with the projected
+ *         matrix in arrowhead form.  The residual of a kept vector is the same
+ *         direction as that of every other one -- the next Lanczos vector scaled
+ *         by the last component of its projected eigenvector -- so the residual
+ *         test survives the restart unchanged.  The projected matrix is small and
+ *         is diagonalized directly by Jacobi rotations, which also hands back the
+ *         eigenvectors the restart needs.
+ *         A single-vector recurrence resolves *distinct* eigenvalues only: an
+ *         exactly degenerate level contributes one Ritz vector per copy only
+ *         when the restart keeps room for one.
  * @short Lowest eigenvalues of a Hermitian operator, given its product.
  * @throws std::runtime_error if a requested Ritz value is not converged.
  */
