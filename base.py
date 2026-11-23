@@ -1,12 +1,76 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from dataclasses import dataclass
 from itertools import product
-from typing import Optional, Iterator
+from typing import Callable, Optional, Iterator
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
+
+
+# positions are compared after rounding to this many decimals; a symmetry
+# operation maps a site onto another site only up to a supercell-lattice vector
+_POS_TOL_DIGITS = 8
+# a position is on a lattice site if its coordinates are integral to this
+# tolerance (in units of the supercell vectors)
+_POS_TOL = 1e-6
+# operations of a point group are compared up to this tolerance
+_OP_TOL = 1e-8
+_OP_TOL_DIGITS = 12
+
+
+def _matrix_to_flat(op: np.ndarray) -> tuple[int | float, ...]:
+    '''
+    Convert a matrix to a flattened tuple suitable for hashing.
+
+    Entries within ``_OP_TOL`` of an integer are stored as ``int``;
+    the others are rounded to ``_OP_TOL_DIGITS`` decimal places.
+
+    Args:
+        op: a square matrix, typically a point-group operation.
+    Returns:
+        A hashable, rounding-insensitive representation of the matrix.
+    '''
+    flat: list[int | float] = []
+    for x in np.asarray(op, dtype=float).ravel():
+        r = round(float(x))
+        if abs(x - r) < _OP_TOL:
+            flat.append(int(r))
+        else:
+            flat.append(round(float(x), _OP_TOL_DIGITS))
+    return tuple(flat)
+
+
+# key of a sector: (momentum label, little-group irrep, spin-flip parity)
+SectorKey = tuple[tuple[int, ...], Optional[str], Optional[int]]
+
+
+@dataclass
+class Sector:
+    '''
+    One irreducible sector of the Hamiltonian.
+
+    Attributes:
+        key: ``(k, alpha, s)``, the momentum label, the little-group irrep
+            (None when the point group is trivial) and the spin-flip parity
+            (None when spin flip is not resolved).
+        basis: ``(dim_H, dim_sector)`` sparse matrix whose orthonormal columns
+            are the adapted basis vectors, in the computational basis.
+        hamiltonian: ``(dim_sector, dim_sector)`` sparse Hamiltonian block in
+            that basis.
+    '''
+    key: SectorKey
+    basis: csr_matrix
+    hamiltonian: csr_matrix
+
+    @property
+    def dim(self) -> int:
+        '''Dimension of the sector.'''
+        return int(self.basis.shape[1])
 
 
 class TranslationGroup:
@@ -104,7 +168,18 @@ class Model:
                     # centering the cell at the origin and assigning a unique index to each atom
         self.size_of_unit_cell = len(self.unit_cell_idx)
 
-        # extending by PBC:
+        # ── exact site lookup ──────────────────────────────────────────
+        # a site is keyed by its fractional coordinates in the supercell basis,
+        # reduced modulo one supercell vector: the same key is then obtained
+        # whatever representative of the position a symmetry operation lands on
+        self._site_lookup: dict[tuple[str, tuple[float, ...]], int] = {}
+        for pos, s, idx in self.unit_cell_idx:
+            key = (s, self._position_key(pos))
+            if key in self._site_lookup:
+                raise ValueError(f"Two sites of type {s!r} occupy the same position {pos}.")
+            self._site_lookup[key] = idx
+
+        # extending by PBC (used for plotting only; site lookup is exact):
         self.extended_cell = []
         # dumb implementation by storing all possible positions
         for pos, s, idx in self.unit_cell_idx: 
@@ -130,19 +205,46 @@ class Model:
         for i in range(self.spatial_dim):
             translated = np.zeros(self.size_of_unit_cell, dtype=int)
             for pos, s, idx in self.unit_cell_idx:
-                translated[idx] = self._get_idx(pos + self.cell_vectors[i], s)
-            self._elem_tr_perms.append(Permutation(translated))
+                translated[idx] = self._site_index(pos + self.cell_vectors[i], s)
+            self._elem_tr_perms.append(Permutation(np.argsort(translated)))
 
+        # ── point-group permutations, validated as isometries of the torus ─
+        self.point_group_ops: list[np.ndarray] = []
         self._pt_perms: list[Permutation] = []
         for arr in self.point_group:
             if arr.ndim != 0:
                 assert arr.shape == (self.spatial_dim, self.spatial_dim), \
                     f"Transformation matrix must be of shape ({self.spatial_dim}, {self.spatial_dim}), got {arr.shape}."
-            permuted = np.zeros(self.size_of_unit_cell, dtype=int)
+            image = np.zeros(self.size_of_unit_cell, dtype=int)
             for pos, s, idx in self.unit_cell_idx:
                 transformed_pos = arr * pos if arr.ndim == 0 else arr @ pos
-                permuted[idx] = self._get_idx(transformed_pos, s)
-            self._pt_perms.append(Permutation(permuted))
+                try:
+                    image[idx] = self._site_index(transformed_pos, s)
+                except ValueError:
+                    raise ValueError(
+                        f"Point-group operation {np.asarray(arr).tolist()} does not map the "
+                        f"site {idx} at {np.asarray(pos).round(6).tolist()} onto a site of the "
+                        f"supercell: it is not a symmetry of this lattice. Either enlarge the "
+                        f"supercell or drop this operation.") from None
+            if not np.array_equal(np.sort(image), np.arange(self.size_of_unit_cell)):
+                raise ValueError(
+                    f"Point-group operation {np.asarray(arr).tolist()} maps several sites onto "
+                    f"the same site: it does not preserve the supercell lattice spanned by "
+                    f"{self.supercell_vectors.tolist()}.")
+            if tuple(np.argsort(image)) in {tuple(p.perm) for p in self._pt_perms}:
+                continue    # duplicated operation
+            self.point_group_ops.append(np.asarray(arr, dtype=float))
+            self._pt_perms.append(Permutation(np.argsort(image)))
+
+        # the permutation set must be closed, otherwise "G_pt" is not a group
+        perms = {tuple(p.perm) for p in self._pt_perms}
+        for a in self._pt_perms:
+            for b in self._pt_perms:
+                if tuple((a * b).perm) not in perms:
+                    raise ValueError(
+                        f"The supplied point group is not closed: the product of two of its "
+                        f"operations is not in the set ({len(self._pt_perms)} distinct "
+                        f"operations). Complete the group before building the model.")
 
         self.couplings: list[Coupling] = []
     
@@ -163,28 +265,60 @@ class Model:
 
     # ── Hamiltonian construction ────────────────────────────────────────────
 
-    def _tr_representatives(self, Sztot: Optional[int] = None
+    def _hilbert_space(self, Sztot: Optional[int] = None
+                       ) -> tuple[list[tuple[int, ...]], dict[tuple[int, ...], int]]:
+        '''
+        Computational basis of the Hilbert space.
+
+        Args:
+            Sztot: If given, keep only states with ``sum(state) == Sztot``.
+        Returns:
+            (states, s2i): the basis states in lexicographic order and the map
+            from a state to its row index.
+        '''
+        states = [s for s in product(range(self.physical_dim),
+                                     repeat=self.size_of_unit_cell)
+                  if Sztot is None or sum(s) == Sztot]
+        return states, {s: i for i, s in enumerate(states)}
+
+    def _translation_orbits(self, states: list[tuple[int, ...]]
                             ) -> list[tuple[int, ...]]:
-        '''Representatives of translation-only orbits.'''
-        seen = set()
-        reps = []
-        for state in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-            if Sztot is not None and sum(state) != Sztot:
+        '''
+        One representative (the smallest state) per translation orbit.
+
+        Every orbit is walked once, so the cost is O(#orbits * |G_tr|) and not
+        O(d^L * |G_tr|).
+        '''
+        seen: set[tuple[int, ...]] = set()
+        reps: list[tuple[int, ...]] = []
+        for state in states:
+            if state in seen:
                 continue
-            # Orbit of *state* under translations — take smallest as representative
-            rep = min(tuple(self._permutation(t, 0)(np.array(state)))
-                      for t in self.tr_group)
-            if rep not in seen:
-                seen.add(rep)
-                reps.append(rep)
+            orbit = {tuple(self._permutation(t, 0)(np.array(state)))
+                     for t in self.tr_group}
+            seen |= orbit
+            reps.append(min(orbit))
         return reps
 
     def _build_H_sym(self, Sztot: Optional[int] = None) -> csr_matrix:
-        states = [s for s in product(range(self.physical_dim),
-                                       repeat=self.size_of_unit_cell)
-                  if Sztot is None or sum(s) == Sztot]
+        '''
+        The Hamiltonian, symmetrised over the full lattice group.
+
+        ``H_sym = (1/|G_latt|) Σ_g U(g) H_raw U(g)^{-1}`` is the projector onto
+        the operators that commute with the group: it returns ``H_raw``
+        unchanged when the couplings already respect the symmetry, and the
+        symmetric *average* when they do not.  Note that it averages rather
+        than sums over the images, so a single local term is scaled down by
+        1/|G_latt|; a Hamiltonian built from one term must be assembled from
+        all of its images before being passed here.
+
+        Args:
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+        Returns:
+            The symmetrised Hamiltonian as a complex CSR matrix.
+        '''
+        states, s2i = self._hilbert_space(Sztot)
         n = len(states)
-        s2i = {s: i for i, s in enumerate(states)}
 
         # build H_raw as sparse (COO accumulation)
         raw_acc: dict[tuple[int, int], complex] = defaultdict(complex)
@@ -223,74 +357,24 @@ class Model:
 
     def _build_H(self, Sztot: Optional[int] = None
                  ) -> dict[tuple[int, ...], csr_matrix]:
-        '''Build H_k for each momentum sector k.  (Step 1 of 3.)'''
-        states = [s for s in product(range(self.physical_dim),
-                                       repeat=self.size_of_unit_cell)
-                  if Sztot is None or sum(s) == Sztot]
-        s2i = {s: i for i, s in enumerate(states)}
-        rep_list = self._tr_representatives(Sztot)
-        Gtr = len(self.tr_group)
-        H_sym = self._build_H_sym(Sztot)
-
-        result = {}
-        for k in self.tr_group.all_momenta():
-            k_reps, k_norms = [], []
-            for rep in rep_list:
-                phase_sum = sum(np.conj(self.tr_group.character(k, t))
-                               for t in self.tr_group
-                               if tuple(self._permutation(t, 0)(np.array(rep))) == rep)
-                norm_sq = abs(phase_sum) / Gtr
-                if norm_sq > 1e-12:
-                    k_reps.append(rep)
-                    k_norms.append(np.sqrt(norm_sq))
-            Mk = len(k_reps)
-            if Mk == 0:
-                continue
-
-            Hk_data, Hk_rows, Hk_cols = [], [], []
-            for i in range(Mk):
-                idx_i = s2i[k_reps[i]]
-                ni = 1.0 / (k_norms[i] * Gtr)
-                for j in range(Mk):
-                    rep_j = k_reps[j]
-                    nj = 1.0 / (k_norms[j] * Gtr)
-                    elem = 0.0j
-                    for t in self.tr_group:
-                        tx = tuple(self._permutation(t, 0)(np.array(rep_j)))
-                        h_val = H_sym[idx_i, s2i[tx]]
-                        if h_val != 0:
-                            elem += np.conj(self.tr_group.character(k, t)) * h_val
-                    elem *= ni * nj * Gtr
-                    if abs(elem) > 1e-12:
-                        Hk_data.append(elem); Hk_rows.append(i); Hk_cols.append(j)
-            H_k = csr_matrix((Hk_data, (Hk_rows, Hk_cols)), shape=(Mk, Mk),
-                             dtype=complex)
-            result[k] = H_k
-
-        return result
-
-
-    # TODO: rewrite this in C++ and bind it to Python.
-    def _build_adapted_basis(self,
-                             Sztot:Optional[int] = None,
-                             spin_flip:bool = False
-                             )-> dict[tuple[int],int]:
         '''
-        Build an adapted basis for the lattice, taking into account the symmetries of the system
+        Momentum-sector Hamiltonians ``H_k = B_k^† H B_k``.  (Step 1 of 3.)
+
         Args:
-            Sztot: An optional integer representing the total number of particles. If provided, only states with this total number of particles will be included in the adapted basis.
-            spin_flip: If True, also include states obtained by spin-flip symmetry.
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
         Returns:
-            A dictionary mapping each unique state (as a tuple of integers) to its corresponding index in the adapted basis.
+            A dict keyed by the momentum label ``k``; each value is the
+            Hamiltonian in the orthonormal momentum-adapted basis of that
+            sector.
         '''
-        d = {}
-        for basis in product(range(self.physical_dim), repeat=self.size_of_unit_cell):
-            if Sztot is not None and sum(basis) != Sztot:
-                continue
-            orb = self.orbit(basis, spin_flip=spin_flip)
-            if orb[0] not in d:
-                d[orb[0]] = len(d)
-        return d
+        states, s2i = self._hilbert_space(Sztot)
+        H_sym = self._build_H_sym(Sztot)
+        result: dict[tuple[int, ...], csr_matrix] = {}
+        for k in self.tr_group.all_momenta():
+            reps, B, _ = self._momentum_basis(k, states, s2i)
+            if reps:
+                result[k] = (B.conj().T @ (H_sym @ B)).tocsr()
+        return result
 
     # ── Permutation composition ───────────────────────────────────────────
 
@@ -351,36 +435,268 @@ class Model:
             result[projected] = result.get(projected, 0j) + coeff
         return result
 
-    def little_group_project(self, k: tuple[int, ...],
-                             alpha: str,
-                             state: tuple[int, ...]
-                             ) -> dict[tuple[int, ...], complex]:
+    def _momentum_basis(self, k: tuple[int, ...],
+                        states: list[tuple[int, ...]],
+                        s2i: dict[tuple[int, ...], int]
+                        ) -> tuple[list[tuple[int, ...]], csr_matrix,
+                                   dict[tuple[int, ...], int]]:
         '''
-        Step 2: within momentum sector k, project onto little-group irrep α.
+        Orthonormal basis of the momentum-k sector.
 
-            Π_α^{G_k} = (d_α/|G_k|) Σ_{r∈G_k} χ_α*(r) · r
+        Column x of the returned matrix is ``|k;x> = Π_k|x> / ||Π_k|x>||``,
+        with x running over the translation-orbit representatives whose
+        projection does not vanish.  Representatives of distinct orbits give
+        orthogonal vectors, and ``Π_k(t x) = χ_k(t) Π_k x`` shows that a single
+        representative per orbit is enough, so this set is an orthonormal basis
+        of ``H_k``.
 
-        *state* should already be momentum-projected (output of
-        ``momentum_project``).  Returns a dict of coefficients.
+        Args:
+            k: momentum label, an integer tuple.
+            states: the computational basis.
+            s2i: map from a state to its row index in *states*.
+        Returns:
+            (reps, B, state2col): the representatives, the
+            ``(len(states), dim H_k)`` basis matrix, and the map from a state
+            of the sector to the column of its orbit.
         '''
-        k_vec = np.array(k) @ self.bz_cellvectors
-        lg, _ = self.point_group.little_group(k_vec, self.bz_cellvectors)
-        lg_ops = list(lg)
-        d_alpha = lg.character(alpha, next(iter(lg)))
-        inv_norm = d_alpha / len(lg_ops)
+        reps: list[tuple[int, ...]] = []
+        state2col: dict[tuple[int, ...], int] = {}
+        rows: list[int] = []
+        cols: list[int] = []
+        data: list[complex] = []
+        for rep in self._translation_orbits(states):
+            vec = self.momentum_project(k, rep)
+            norm = np.sqrt(sum(abs(c) ** 2 for c in vec.values()))
+            if norm < 1e-12:
+                continue        # k is incompatible with the stabiliser of |x>
+            col = len(reps)
+            reps.append(rep)
+            for state, coeff in vec.items():
+                state2col[state] = col
+                rows.append(s2i[state])
+                cols.append(col)
+                data.append(coeff / norm)
+        B = csr_matrix((data, (rows, cols)),
+                       shape=(len(states), len(reps)), dtype=complex)
+        return reps, B, state2col
 
-        result: dict[tuple[int, ...], complex] = {}
-        for r_op in lg_ops:
-            # find index of r_op in self._pt_perms
-            for i, r in enumerate(self.point_group):
-                if np.allclose(r, r_op):
-                    r_idx = i
-                    break
-            perm = self._pt_perms[r_idx]
-            coeff = inv_norm * np.conj(lg.character(alpha, r_op))
-            projected = tuple(perm(np.array(state)))
-            result[projected] = result.get(projected, 0j) + coeff
-        return result
+    def _sector_action(self, state_map: Callable[[tuple[int, ...]], tuple[int, ...]],
+                       states: list[tuple[int, ...]],
+                       s2i: dict[tuple[int, ...], int],
+                       state2col: dict[tuple[int, ...], int],
+                       B: csr_matrix) -> tuple[np.ndarray, np.ndarray]:
+        '''
+        Action of one group element on a momentum sector.
+
+        Every momentum-adapted vector is mapped onto another one times a Bloch
+        phase, ``U(g)|k;x> = φ[x] |k;x'>``: rotating a state that is delocalised
+        over a translation orbit changes which orbit member has to be used as
+        the representative, and that change of representative is a phase
+        ``exp(-i k·t)``.  Dropping it makes the little-group projectors wrong
+        and destroys the sector spectra, so the action is computed as
+        ``B^† U(g) B`` and read off entry by entry.
+
+        Args:
+            state_map: the action of the group element on a computational basis
+                state.
+            states: the computational basis.
+            s2i: map from a state to its row in *states*.
+            state2col: map from a sector state to its column.
+            B: ``(dim_H, dim_sector)`` orthonormal sector basis.
+        Returns:
+            (act, phase) with ``act[x]`` the column that ``U(g)`` maps column x
+            to and ``phase[x]`` the coefficient of that column.
+        Raises:
+            ValueError: if the operation does not act inside the sector or if
+                its action is not a phased permutation.
+        '''
+        coo = B.tocoo()
+        # only the rows that carry the sector basis have to be mapped
+        row_of: dict[int, int] = {}
+        for i in np.unique(coo.row):
+            image = state_map(states[i])
+            if image not in s2i or image not in state2col:
+                raise ValueError(
+                    "The operation maps this momentum sector onto a different one, "
+                    "so it is not in the little group of the momentum.")
+            row_of[int(i)] = s2i[image]
+
+        # U(g) B is B with every row moved to the row of its image
+        moved = csr_matrix((coo.data, ([row_of[r] for r in coo.row], coo.col)),
+                           shape=B.shape, dtype=complex)
+        G = (B.conj().T @ moved).toarray()
+
+        dim = B.shape[1]
+        act = np.empty(dim, dtype=int)
+        phase = np.empty(dim, dtype=complex)
+        for x in range(dim):
+            column = G[:, x]
+            act[x] = int(np.argmax(np.abs(column)))
+            phase[x] = column[act[x]]
+            rest = np.linalg.norm(np.delete(column, act[x]))
+            if rest > 1e-8 or abs(phase[x]) < 1e-8:
+                raise ValueError(
+                    "A group operation does not act on the momentum sector as a phased "
+                    "permutation; check that the little group is correct.")
+        return act, phase
+
+    def little_group(self, k: tuple[int, ...]) -> tuple[PointGroup, list[np.ndarray]]:
+        '''
+        Little group of the momentum label *k*, plus one representative per coset.
+
+        Args:
+            k: momentum label, an integer tuple.
+        Returns:
+            (G_k, coset_reps): the subgroup of the point group that leaves *k*
+            invariant, and a list of representatives of the *right* cosets
+            ``G_k \\ G_pt`` (used only by the induced-character test).
+        '''
+        return self.point_group.little_group(k, self.supercell_vectors, self.Nvec)
+
+    def _isotypic_basis(self, lg: PointGroup, alpha: str,
+                        ops: list[np.ndarray],
+                        actions: list[tuple[np.ndarray, np.ndarray]],
+                        dim: int) -> np.ndarray:
+        '''
+        Orthonormal basis of the alpha-isotypic subspace of a momentum sector.
+
+        ``Π_α = (d_α/|G_k|) Σ_r χ_α*(r) U(r)`` is applied to each basis vector
+        and the images are orthogonalised one by one.  The images are in
+        general neither orthogonal nor independent (that happens as soon as
+        d_α > 1, and also when a basis vector is fixed by a non-trivial
+        subgroup), so this orthonormalisation is what produces a basis.
+
+        Args:
+            lg: the little group.
+            alpha: label of one of its irreps.
+            ops: the operations of the little group, in the order of *actions*.
+            actions: ``(act, phase)`` of each operation on the sector basis, as
+                returned by ``_sector_action``.
+            dim: dimension of the momentum sector.
+        Returns:
+            A complex ``(dim, m_alpha)`` matrix with orthonormal columns.
+        '''
+        d_alpha = lg.irrep_dim(alpha)
+        # the projector is a sum of |G_k| phased permutations, i.e. cheap to
+        # write down; its eigenvectors with eigenvalue one are the sector
+        projector = np.zeros((dim, dim), dtype=complex)
+        columns = np.arange(dim)
+        for (a, phi), op in zip(actions, ops):
+            projector[a, columns] += (np.conj(lg.character(alpha, op))
+                                      * d_alpha / len(actions)) * phi
+        eigenvalues, eigenvectors = np.linalg.eigh(projector)
+        return eigenvectors[:, eigenvalues > 0.5]
+
+    def _parity_basis(self, fmat: np.ndarray, s: int) -> np.ndarray:
+        '''
+        Orthonormal basis of the spin-flip parity ``s`` subspace of a sector.
+
+        Args:
+            fmat: ``(m, m)`` matrix of the spin flip in the sector basis.
+            s: parity, +1 or -1.
+        Returns:
+            A complex ``(m, m_s)`` matrix with orthonormal columns, to be
+            composed with the sector basis.
+        '''
+        projector = 0.5 * (np.eye(fmat.shape[0], dtype=complex) + s * fmat)
+        eigenvalues, eigenvectors = np.linalg.eigh(projector)
+        return eigenvectors[:, eigenvalues > 0.5]
+
+    def build_sectors(self, Sztot: Optional[int] = None,
+                      spin_flip: bool = False
+                      ) -> dict[SectorKey, Sector]:
+        '''
+        Full symmetry-resolved decomposition of the Hamiltonian.
+
+        For every momentum k, the little group G_k acts on the momentum-adapted
+        basis by a permutation; projecting onto its irreps α and (optionally)
+        onto the spin-flip parity s gives orthonormal bases of the sectors
+        ``(k, α[, s])`` and the Hamiltonian blocks in those bases.
+
+        Args:
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            spin_flip: If True, also resolve the spin-flip parity
+                ``F: σ_i → d-1-σ_i``.
+        Returns:
+            A dict keyed by ``(k, alpha, s)`` — ``alpha`` is None when the point
+            group is trivial and ``s`` is None when *spin_flip* is False — of
+            :class:`Sector` objects holding the basis and the block Hamiltonian.
+        '''
+        if spin_flip and Sztot is not None and \
+                2 * Sztot != self.size_of_unit_cell * (self.physical_dim - 1):
+            raise ValueError(
+                "The spin flip maps sum(state) == Sztot onto "
+                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
+                "Sztot is self-conjugate.")
+        states, s2i = self._hilbert_space(Sztot)
+        H_sym = self._build_H_sym(Sztot)
+        flip = (lambda state: tuple(self.physical_dim - 1 - s for s in state))
+        sectors: dict[SectorKey, Sector] = {}
+        for k in self.tr_group.all_momenta():
+            reps, B, state2col = self._momentum_basis(k, states, s2i)
+            if not reps:
+                continue
+            H_k = (B.conj().T @ (H_sym @ B)).toarray()
+            lg, _ = self.little_group(k)
+            ops = list(lg)
+            fact = (self._sector_action(flip, states, s2i, state2col, B)
+                    if spin_flip else None)
+            # the trivial little group has a single sector, nothing to project
+            actions = [] if len(ops) == 1 else [
+                self._sector_action(
+                    (lambda state, perm=self._op_perm(op):
+                     tuple(perm(np.array(state)))),
+                    states, s2i, state2col, B)
+                for op in ops]
+            irreps = ['A'] if len(ops) == 1 else lg.all_irrps()
+            for alpha in irreps:
+                Q = (np.eye(len(reps), dtype=complex) if len(ops) == 1
+                     else self._isotypic_basis(lg, alpha, ops, actions, len(reps)))
+                if Q.shape[1] == 0:
+                    continue
+                H_a = Q.conj().T @ (H_k @ Q)
+                # the spin flip commutes with the whole symmetry group, so it
+                # acts inside the alpha sector; its matrix there follows from
+                # its (phased) permutation of the sector basis
+                fmat = None
+                if spin_flip:
+                    pfq = np.zeros_like(Q)
+                    pfq[fact[0], :] = fact[1][:, None] * Q
+                    fmat = Q.conj().T @ pfq
+                for s in ((None,) if not spin_flip else (1, -1)):
+                    R = (np.eye(Q.shape[1], dtype=complex) if s is None
+                         else self._parity_basis(fmat, s))
+                    if R.shape[1] == 0:
+                        continue
+                    key = (k, alpha, s)
+                    sectors[key] = Sector(
+                        key=key, basis=csr_matrix(B @ (Q @ R)),
+                        hamiltonian=csr_matrix(R.conj().T @ (H_a @ R)))
+        return sectors
+
+    def _op_perm(self, op: np.ndarray) -> Permutation:
+        '''
+        Site permutation of a point-group operation.
+
+        The trivial group is represented by a scalar, which stands for the
+        identity permutation.
+
+        Args:
+            op: an operation of ``self.point_group``.
+        Returns:
+            The corresponding site permutation.
+        '''
+        arr = np.asarray(op, dtype=float)
+        if arr.ndim == 0:
+            return Permutation(np.arange(self.size_of_unit_cell))
+        return self._pt_perms[self._pt_index(arr)]
+
+    def _pt_index(self, op: np.ndarray) -> int:
+        '''Index of the point-group operation *op* in ``self._pt_perms``.'''
+        for i, other in enumerate(self.point_group_ops):
+            if np.allclose(other, op):
+                return i
+        raise ValueError(f"Operation {np.asarray(op).tolist()} not found in the point group.")
 
     def set_center_at(self, center: int | np.ndarray):
         '''
@@ -425,13 +741,43 @@ class Model:
         ax.set_title('Lattice Structure')
         return ax
 
-    def _get_idx(self, pos: np.ndarray, s: str, tol: float = 1e-6) -> int:
-        # brute force search
-        # self.extended_cell is at most 1000, so this is fine
-        for p, s1, idx in self.extended_cell:
-            if np.allclose(p, pos, atol=tol) and s1 == s:
-                return idx
-        raise ValueError(f"Position {pos} not found in unit cell or extended cell.")
+    def _site_index(self, pos: np.ndarray, s: str) -> int:
+        '''
+        Index of the site of type *s* sitting at *pos*, modulo the supercell lattice.
+
+        The position is reduced modulo ``supercell_vectors`` before the lookup,
+        so a symmetry operation may land on any periodic image of a site.
+
+        Args:
+            pos: Cartesian position of a site, up to a supercell-lattice vector.
+            s: site type.
+
+        Raises:
+            ValueError: if no site of type *s* sits at that position.
+        '''
+        key = (s, self._position_key(pos))
+        if key not in self._site_lookup:
+            raise ValueError(f"No site of type {s!r} at {np.asarray(pos).round(6).tolist()}.")
+        return self._site_lookup[key]
+
+    def _position_key(self, pos: np.ndarray) -> tuple[float, ...]:
+        '''
+        Fractional coordinates of *pos* in the supercell basis, modulo one cell.
+
+        Args:
+            pos: Cartesian position.
+        Returns:
+            The fractional coordinates, each reduced into ``[0, 1)`` and rounded
+            to ``_POS_TOL_DIGITS`` decimals.  Positions that differ by a
+            supercell-lattice vector give the same key.
+        '''
+        frac = np.asarray(pos, dtype=float) @ np.linalg.inv(self.supercell_vectors)
+        frac = frac - np.floor(frac + 1e-9)
+        return tuple(np.round(frac, _POS_TOL_DIGITS))
+
+    def _get_idx(self, pos: np.ndarray, s: str) -> int:
+        '''Backward-compatible alias of :meth:`_site_index`.'''
+        return self._site_index(pos, s)
 
 class Coupling:
     '''
@@ -574,16 +920,27 @@ class Coupling:
 
 class Permutation:
     '''
-    Class representing a symmetry operation on atoms in the lattice.
+    A site permutation of the unit cell.
+
+    ``perm[i]`` is the site that is *mapped onto* site ``i``, i.e. the
+    preimage of ``i``.  Acting on a computational basis state this gives
+
+        ``perm(state)[i] == state[perm[i]] == state[g^{-1}(i)]``,
+
+    which is exactly ``g|σ_1 … σ_L> = |σ_{g^{-1}(1)} … σ_{g^{-1}(L)}>``.
+    With the preimage convention the product ``a * b`` is the group element
+    ``a b`` (apply ``b`` first), so ``Permutation`` is a genuine, not an
+    anti-, representation of the symmetry group on the computational basis.
     '''
     def __init__(self, 
                  perm: np.ndarray):
-        self.perm:NDArray[np.int64] = perm
+        self.perm:NDArray[np.int64] = np.asarray(perm, dtype=int)
         self.size = len(perm)
         if not np.array_equal(np.sort(perm), np.arange(self.size)):
             raise ValueError("Invalid permutation array. It must contain all integers from 0 to size-1 exactly once.")
 
     def __call__(self, x:np.ndarray|int) -> np.ndarray|int:
+        '''Action on a basis state (``x[self.perm]``) or on a site index.'''
         if isinstance(x, int):
             return self.perm[x]
         elif isinstance(x, np.ndarray):
@@ -612,34 +969,56 @@ class Permutation:
         return hash(tuple(self.perm))
 
 
+def _op_key(op: np.ndarray) -> tuple[float, ...]:
+    '''Rounding-insensitive hashable key of an operation matrix.'''
+    return tuple(np.round(np.asarray(op, dtype=float).ravel(), _OP_TOL_DIGITS))
+
+
+def _unique_ops(ops: list[np.ndarray]) -> list[np.ndarray]:
+    '''Drop duplicated operations, keeping the order of first appearance.'''
+    unique: dict[tuple[float, ...], np.ndarray] = {}
+    for op in ops:
+        unique.setdefault(_op_key(op), np.asarray(op, dtype=float))
+    return list(unique.values())
+
+
+def _right_coset_representatives(ops: list[np.ndarray],
+                                 subgroup: list[np.ndarray]
+                                 ) -> list[np.ndarray]:
+    '''
+    One representative per right coset ``G_k \\ G_pt``.
+
+    Args:
+        ops: the operations of the full group, without duplicates.
+        subgroup: the operations of the subgroup, without duplicates.
+    Returns:
+        A list with ``|G_pt| / |G_k|`` operations, one from each coset
+        ``G_k g``.
+    Raises:
+        ValueError: if *subgroup* is not a subgroup of *ops*.
+    '''
+    index = {_op_key(op) for op in ops}
+    reps: list[np.ndarray] = []
+    cosets: list[frozenset[tuple[float, ...]]] = []
+    for g in ops:
+        coset = frozenset(_op_key(h @ g) for h in subgroup)
+        if not coset <= index:
+            raise ValueError("The subgroup is not a subgroup of the point group.")
+        if coset not in cosets:
+            cosets.append(coset)
+            reps.append(g)
+    return reps
+
+
 class PointGroup(ABC):
     '''
-    Class representing a group of rotations and inversion. 
+    A finite group acting on the sites of a lattice through orthogonal matrices.
+
+    Subclasses provide the operations, their irreps and their characters; the
+    little-group decomposition of the momenta is implemented here once, for
+    every group, because it only uses the action of the group on the lattice.
     '''
-    @abstractmethod
-    def little_group(self, k:np.ndarray,
-                     reciprocal_basis:Optional[np.ndarray] = None
-                     ) -> tuple['PointGroup', list[np.ndarray]]:
-        '''
-        Return the little group of a given momentum k.
 
-        Args:
-            k: A numpy array representing the momentum vector.
-            reciprocal_basis: Optional (d,d) array whose columns are the
-                reciprocal-lattice basis vectors of the supercell.  When
-                provided, *op* ∈ G_pt belongs to the little group iff
-                ``op @ k ≈ k + reciprocal_basis @ n`` for some integer
-                vector *n*.  When ``None``, exact preservation
-                ``op @ k ≈ k`` is used (suitable for Γ, or when the
-                reciprocal lattice is unknown).
-
-        Returns:
-            (grp,lst): A PointGroup object representing the little group
-            of k, and a list of left-coset representatives
-            G_pt / G_k.
-        '''
-        raise NotImplementedError("This method should be implemented in subclasses.")
-        
     @abstractmethod
     def all_irrps(self) -> list[str]:
         '''
@@ -666,16 +1045,123 @@ class PointGroup(ABC):
     @abstractmethod
     def __iter__(self) -> Iterator[np.ndarray]:
         '''
-        Return an iterator over the group operations in the point group.
+        Return a fresh iterator over the group operations.
+
+        Iteration must not carry state: the same group object is iterated
+        several times, sometimes nested.
         '''
         raise NotImplementedError("This method should be implemented in subclasses.")
 
-    @abstractmethod
-    def __next__(self) -> np.ndarray:
+    # ── derived quantities ───────────────────────────────────────────────
+
+    def order(self) -> int:
+        '''Number of operations of the group.'''
+        return len(list(self))
+
+    def identity(self) -> np.ndarray:
+        '''The identity operation of the group.'''
+        for op in self:
+            arr = np.asarray(op, dtype=float)
+            if arr.ndim == 0 or np.allclose(arr, np.eye(arr.shape[0])):
+                return arr
+        raise ValueError("The group does not contain the identity operation.")
+
+    def irrep_dim(self, irrep: str) -> int:
         '''
-        Return the next group operation in the point group.
+        Dimension of an irrep, i.e. its character on the identity.
+
+        Args:
+            irrep: label of the irrep.
+        Returns:
+            The dimension as an integer.
         '''
-        raise NotImplementedError("This method should be implemented in subclasses.")
+        return int(round(float(np.real(self.character(irrep, self.identity())))))
+
+    # ── action on the momenta ────────────────────────────────────────────
+
+    def label_action(self, op: np.ndarray,
+                     supercell_vectors: np.ndarray) -> np.ndarray:
+        '''
+        Integer action of *op* on the momentum labels.
+
+        With ``A_i`` the supercell vectors (rows of *supercell_vectors*), an
+        operation acts on the lattice as ``op A_i = Σ_j M[j, i] A_j`` and
+        therefore maps the momentum label k (an integer tuple, in units of the
+        supercell reciprocal vectors) to ``Mᵀ k``.
+
+        Args:
+            op: the operation matrix.
+            supercell_vectors: ``(d, d)`` array whose *rows* are the supercell
+                vectors.
+        Returns:
+            The integer matrix M.
+        Raises:
+            ValueError: if *op* does not preserve the supercell lattice, in
+                which case it is not a symmetry of the finite lattice and the
+                momentum labels are not defined.
+        '''
+        arr = np.asarray(op, dtype=float)
+        cell = np.asarray(supercell_vectors, dtype=float)
+        if arr.ndim == 0:
+            return np.eye(cell.shape[0], dtype=int)
+        M = ((arr @ cell.T).T @ np.linalg.inv(cell)).T
+        if not np.allclose(M, np.rint(M), atol=_OP_TOL):
+            raise ValueError(
+                f"Operation {arr.tolist()} does not preserve the supercell lattice "
+                f"spanned by {cell.tolist()}: it is not a symmetry of this lattice.")
+        return np.rint(M).astype(int)
+
+    def preserves_momentum(self, op: np.ndarray, k: tuple[int, ...],
+                           supercell_vectors: np.ndarray,
+                           Nvec: np.ndarray) -> bool:
+        '''
+        Whether *op* leaves the momentum label *k* invariant.
+
+        The labels live in ``Z_{N_1} x … x Z_{N_d}``, so the condition is
+        ``Mᵀ k ≡ k (mod N_i)``.  It is *not* enough to check ``op k ≡ k``
+        modulo the reciprocal lattice: every label already is an integer
+        combination of the supercell reciprocal vectors, so that test accepts
+        every operation, which makes the little group equal to the whole point
+        group at every momentum and destroys the point-group symmetry labels.
+
+        Args:
+            op: the operation matrix.
+            k: the momentum label.
+            supercell_vectors: rows are the supercell vectors.
+            Nvec: multiplicities ``N_i`` of the unit cell vectors.
+        Returns:
+            True if *op* belongs to the little group of *k*.
+        '''
+        M = self.label_action(op, supercell_vectors)
+        label = np.asarray(k, dtype=int)
+        return bool(np.all((M.T @ label - label) % np.asarray(Nvec, dtype=int) == 0))
+
+    def little_group(self, k: tuple[int, ...], supercell_vectors: np.ndarray,
+                     Nvec: np.ndarray
+                     ) -> tuple['PointGroup', list[np.ndarray]]:
+        '''
+        Little group of the momentum label *k*, plus coset representatives.
+
+        Args:
+            k: momentum label, an integer tuple.
+            supercell_vectors: rows are the supercell vectors.
+            Nvec: multiplicities of the unit cell vectors.
+        Returns:
+            (G_k, coset_reps): the subgroup of operations that leave *k*
+            invariant and a list of representatives of the right cosets
+            ``G_k \\ G_pt``.
+        '''
+        ops = _unique_ops(list(self))
+        preserving = [op for op in ops
+                      if self.preserves_momentum(op, k, supercell_vectors, Nvec)]
+        coset_reps = _right_coset_representatives(ops, preserving)
+        if len(preserving) == len(ops):
+            group: PointGroup = self
+        elif len(preserving) == 1:
+            group = TrivialGroup()
+        else:
+            group = ExplicitPointGroup(preserving)
+        return group, coset_reps
 
 
 class TrivialGroup(PointGroup):
@@ -685,7 +1171,6 @@ class TrivialGroup(PointGroup):
     The only irrep of this group is 'A', which has a character of 1 for the identity operation.
     '''
     def __init__(self):
-        self._iterated = False
         self._shape: tuple[int, ...] = ()
         self._operations: tuple[tuple[int | float, ...], ...] = ((1,),)
 
@@ -700,11 +1185,6 @@ class TrivialGroup(PointGroup):
     def all_irrps(self) -> list[str]:
         return ['A']
 
-    def little_group(self, k:np.ndarray,
-                     reciprocal_basis:Optional[np.ndarray] = None
-                     ) -> tuple['PointGroup', list[np.ndarray]]:
-        return self, [np.eye(len(k))]
-
     def character(self, irrep:str, op:np.ndarray) -> complex:
         if irrep == 'A':
             return 1.0
@@ -712,13 +1192,136 @@ class TrivialGroup(PointGroup):
             raise ValueError(f"Unknown irreducible representation: {irrep}")
 
     def __iter__(self):
-        self._iterated = False
-        return self
+        return iter([np.array(self._operations[0], dtype=np.float64)
+                     .reshape(self._shape)])
 
-    def __next__(self) -> np.ndarray:
-        if self._iterated:
-            raise StopIteration
-        self._iterated = True
-        return np.array(self._operations[0], dtype=np.float64).reshape(self._shape)
+
+class ExplicitPointGroup(PointGroup):
+    '''
+    A point group given explicitly by its list of operation matrices.
+
+    This is the class used for the little groups, which are generic subgroups
+    of the point group and consequently have no dedicated class.  Only the
+    operation list is needed: any finite subgroup of O(2) is cyclic C_n or
+    dihedral D_n, so the irreps follow from the order *n* of the rotation
+    subgroup and from whether the group contains reflections.
+
+    Irreps
+    ------
+    * C_n: n one-dimensional irreps ``'j0' … 'j{n-1}'`` with
+      ``χ_j(r^m) = exp(2πi j m / n)``.
+    * D_n: ``'A1'``, ``'A2'`` (plus ``'B1'``, ``'B2'`` for even n) and
+      ``(n-1)//2`` two-dimensional irreps ``'E1' …`` with
+      ``χ_{E_j}(r^m) = 2 cos(2π j m / n)`` on rotations and 0 on reflections.
+      A reflection is written ``σ = σ_0 r^m`` with σ_0 the first reflection of
+      the list; its character is ``(-1)^m`` for ``B1`` and ``-(-1)^m`` for
+      ``B2``.
+
+    The operations must form a group.  This is checked on construction, because
+    a set of matrices that is not closed silently produces a meaningless
+    character table and therefore meaningless sectors.
+    '''
+
+    def __init__(self, operations: list[np.ndarray]):
+        ops = _unique_ops(operations)
+        if not ops:
+            raise ValueError("A point group needs at least one operation.")
+        shape = ops[0].shape
+        if shape != (2, 2):
+            raise ValueError(
+                "ExplicitPointGroup knows the irreps of subgroups of O(2) only, "
+                f"got operations of shape {shape}.")
+        for op in ops:
+            if not np.allclose(op @ op.T, np.eye(2), atol=_OP_TOL):
+                raise ValueError("The operations must be orthogonal matrices.")
+
+        # closure: every product of two operations must be one of them
+        keys = {_op_key(op) for op in ops}
+        for a in ops:
+            for b in ops:
+                if _op_key(a @ b) not in keys:
+                    raise ValueError(
+                        "The supplied operations do not form a group: "
+                        f"{a.tolist()} * {b.tolist()} is missing.")
+
+        self._shape = shape
+        self._operations: tuple[tuple[float, ...], ...] = tuple(
+            _matrix_to_flat(op) for op in ops)
+        self._ops = ops
+        self._rotations = [op for op in ops if np.linalg.det(op) > 0]
+        self._reflections = [op for op in ops if np.linalg.det(op) < 0]
+        self._n = len(self._rotations)
+        if len(self._reflections) not in (0, self._n):
+            raise ValueError(
+                f"{self._n} rotations and {len(self._reflections)} reflections "
+                "do not form a cyclic or a dihedral group.")
+
+    def __hash__(self):
+        return hash((self._shape, self._operations))
+
+    def __eq__(self, other):
+        if not isinstance(other, ExplicitPointGroup):
+            return NotImplemented
+        return (self._shape == other._shape
+                and self._operations == other._operations)
+
+    def __iter__(self):
+        return iter([op.copy() for op in self._ops])
+
+    # ── irreps ──────────────────────────────────────────────────────────
+
+    def all_irrps(self) -> list[str]:
+        '''Labels of the irreps, see the class docstring.'''
+        if not self._reflections:
+            return [f'j{j}' for j in range(self._n)]
+        labels = ['A1', 'A2']
+        if self._n % 2 == 0:
+            labels += ['B1', 'B2']
+        labels += [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
+        return labels
+
+    def _rotation_power(self, op: np.ndarray) -> int:
+        '''
+        Power m (mod n) such that ``op = rotation(2π/n)^m``.
+        '''
+        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
+        return int(round(angle * self._n / (2 * np.pi))) % self._n
+
+    def character(self, irrep: str, op: np.ndarray) -> complex:
+        '''
+        Character of *irrep* on *op*.
+
+        Args:
+            irrep: one of the labels returned by ``all_irrps``.
+            op: an operation matrix of the group.
+        Returns:
+            The character.
+        Raises:
+            ValueError: if *irrep* is not a label of this group.
+        '''
+        arr = np.asarray(op, dtype=float)
+        if irrep not in self.all_irrps():
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
+        if np.linalg.det(arr) > 0:
+            m = self._rotation_power(arr)
+            if not self._reflections:
+                return np.exp(2j * np.pi * int(irrep[1:]) * m / self._n)
+            if irrep in ('A1', 'A2'):
+                return 1.0
+            if irrep in ('B1', 'B2'):
+                return 1.0 if m % 2 == 0 else -1.0
+            return 2.0 * np.cos(2 * np.pi * int(irrep[1:]) * m / self._n)
+
+        # reflections:  op = sigma_0 r^m  with sigma_0 the first reflection
+        m = self._rotation_power(self._reflections[0] @ arr)
+        if irrep == 'A1':
+            return 1.0
+        if irrep == 'A2':
+            return -1.0
+        if irrep == 'B1':
+            return 1.0 if m % 2 == 0 else -1.0
+        if irrep == 'B2':
+            return -1.0 if m % 2 == 0 else 1.0
+        return 0.0
 
 

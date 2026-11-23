@@ -34,133 +34,28 @@ def reflection(rad: float) -> np.ndarray:
                      [s, -c]])
 
 
-def _matrix_to_flat(op: np.ndarray) -> tuple[int | float, ...]:
-    '''
-    Convert a matrix to a flattened tuple suitable for hashing.
-    Entries within 1e-10 of an integer are stored as ``int``;
-    others are rounded to 12 decimal places and stored as ``float``.
-    '''
-    flat: list[int | float] = []
-    for x in op.flat:
-        r = round(x)
-        if abs(x - r) < 1e-10:
-            flat.append(int(r))
-        else:
-            flat.append(round(float(x), 12))
-    return tuple(flat)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Internal base class for 2D point groups
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class _Generic2DPointGroup(PointGroup):
+class _Generic2DPointGroup(ExplicitPointGroup):
     '''
     Base class for 2D point groups that store their operations explicitly.
 
-    Operations are stored internally as ``tuple[tuple[int|float,…],…]``
-    (flattened data, one tuple per element) together with a single
-    ``_shape`` shared by all elements, so the group is hashable.
-    Iteration still yields ``np.ndarray`` matrices.
+    The operations, the generic character table, the little-group
+    decomposition and the momenta are inherited from
+    :class:`base.ExplicitPointGroup`; this class only adds the helpers that
+    named groups use to look an operation up in their own character table.
+
+    Iteration yields ``np.ndarray`` matrices.
     '''
 
-    def __init__(self, operations: list[np.ndarray]):
-        if operations:
-            self._shape: tuple[int, ...] = operations[0].shape
-        else:
-            self._shape = ()
-        self._operations: tuple[tuple[int | float, ...], ...] = tuple(
-            _matrix_to_flat(op) for op in operations
-        )
-        self._iter_index = 0
-
-    def __hash__(self):
-        return hash((self._shape, self._operations))
-
-    def __eq__(self, other):
-        if not isinstance(other, _Generic2DPointGroup):
-            return NotImplemented
-        return (self._shape == other._shape
-                and self._operations == other._operations)
-
-    def __iter__(self):
-        self._iter_index = 0
-        return self
-
-    def __next__(self) -> np.ndarray:
-        if self._iter_index >= len(self._operations):
-            raise StopIteration
-        data = self._operations[self._iter_index]
-        self._iter_index += 1
-        return np.array(data, dtype=np.float64).reshape(self._shape)
-
-    # ── fallback irrep / character (for generic subgroups) ───────────────
-
-    def all_irrps(self) -> list[str]:
-        return ['A']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        if irrp == 'A':
-            return 1.0
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-    def little_group(self, k: np.ndarray,
-                     reciprocal_basis: np.ndarray | None = None
-                     ) -> tuple[PointGroup, list[np.ndarray]]:
-        '''
-        Fallback little-group decomposition for an unnamed subgroup.
-
-        When *reciprocal_basis* is given, *op* preserves *k* iff
-        ``op @ k ≈ k + reciprocal_basis @ n`` for integer *n*.
-        Otherwise exact equality ``op @ k ≈ k`` is used.
-        '''
-        eye = np.eye(k.shape[0]) if k.ndim == 1 else np.eye(2)
-        ops = list(self)
-
-        if reciprocal_basis is None:
-            if np.allclose(k, 0):
-                return self, [eye]
-            preserving = [op for op in ops if np.allclose(op @ k, k)]
-            others     = [op for op in ops if not np.allclose(op @ k, k)]
-        else:
-            preserving = [op for op in ops
-                          if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in ops
-                          if not self._k_preserved(op, k, reciprocal_basis)]
-
-        if len(preserving) <= 1:
-            return TrivialGroup(), others[:1] if others else [eye]
-
-        sub = _Generic2DPointGroup(preserving)
-        n_coset = (len(ops) // len(preserving)
-                   if len(preserving) > 0 else 1)
-        return sub, others[:n_coset] if others else [eye]
-
-    # ── helpers ──────────────────────────────────────────────────────────
+    # ── identifying operations ───────────────────────────────────────────
 
     @staticmethod
     def _is_rotation(op: np.ndarray) -> bool:
         '''Return True if *op* is a proper rotation (det > 0).'''
         return np.linalg.det(op) > 0
-
-    @staticmethod
-    def _k_preserved(op: np.ndarray, k: np.ndarray,
-                     reciprocal_basis: np.ndarray) -> bool:
-        '''
-        Return True if *op* preserves *k* modulo reciprocal-lattice vectors,
-        i.e.  ``op @ k ≈ k + n @ reciprocal_basis`` for some integer *n*.
-
-        *reciprocal_basis* is a (d,d) array whose **rows** are the
-        reciprocal basis vectors (same convention as
-        ``Model.bz_cellvectors``).
-        '''
-        delta = op @ k - k
-        # Rows of reciprocal_basis are basis vectors b_i.
-        # We need integer n such that  n @ reciprocal_basis ≈ delta.
-        # Solve: reciprocal_basis.T @ n = delta  (columns = basis vectors).
-        n_float = np.linalg.solve(reciprocal_basis.T, delta)
-        n_int = np.rint(n_float).astype(int)
-        return np.allclose(n_int @ reciprocal_basis, delta)
 
     def _find_op_index(self, op: np.ndarray) -> int:
         '''Return the index in ``self._operations`` that matches *op*.'''
@@ -194,43 +89,6 @@ class CyclicGroup(_Generic2DPointGroup):
         angle = np.arctan2(op[1, 0], op[0, 0])
         angle = angle % (2 * np.pi)
         return int(round(angle * self.n / (2 * np.pi))) % self.n
-
-    # ── little group ─────────────────────────────────────────────────────
-
-    def little_group(self, k: np.ndarray,
-                     reciprocal_basis: np.ndarray | None = None
-                     ) -> tuple[PointGroup, list[np.ndarray]]:
-        '''
-        Return the little group of momentum *k*.
-
-        For a cyclic group, the only operations that can leave a non-zero
-        momentum invariant are the identity (and C₂ when *k* is at a
-        time-reversal-invariant momentum point).
-        '''
-        if reciprocal_basis is None and np.allclose(k, 0):
-            return self, [np.eye(2)]
-
-        ops = list(self)
-
-        if reciprocal_basis is None:
-            preserving = [op for op in ops if np.allclose(op @ k, k)]
-            others     = [op for op in ops if not np.allclose(op @ k, k)]
-        else:
-            preserving = [op for op in ops
-                          if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in ops
-                          if not self._k_preserved(op, k, reciprocal_basis)]
-
-        m = len(preserving)
-
-        if m == 1:
-            return TrivialGroup(), others[:1] if others else [np.eye(2)]
-        if m == self.n:
-            return self, [np.eye(2)]
-
-        # Build a generic subgroup with the preserving operations
-        sub = _Generic2DPointGroup(preserving)
-        return sub, others[:self.n // m] if others else [np.eye(2)]
 
 
 # ── C₂ ──────────────────────────────────────────────────────────────────────
@@ -353,10 +211,10 @@ class C6(CyclicGroup):
     =====  ===  ====  ===  ===  =====  =====
     A       1    1     1    1    1      1
     B       1   −1     1   −1    1     −1
-    E₁      1    ω    ω²  −1   ω⁴     ω⁵
-    E₂      1   ω²    ω⁴   1   ω²     ω⁴
-    E₁*     1   ω⁵    ω⁴  −1   ω²     ω
-    E₂*     1   ω⁴    ω²   1   ω⁴     ω²
+    E₁      1    ω    ω²   −1   ω⁴     ω⁵
+    E₂      1   ω²    ω⁴   1    ω²     ω⁴
+    E₁*     1   ω⁵    ω⁴  −1    ω²     ω
+    E₂*     1   ω⁴    ω²   1    ω⁴     ω²
     =====  ===  ====  ===  ===  =====  =====
 
     ω = exp(πi/3).
@@ -463,43 +321,6 @@ class DihedralGroup(_Generic2DPointGroup):
         k = self._get_rotation_power(op)
         return 'sv' if k % 2 == 0 else 'sd'
 
-    # ── little group ─────────────────────────────────────────────────────
-
-    def little_group(self, k: np.ndarray,
-                     reciprocal_basis: np.ndarray | None = None
-                     ) -> tuple[PointGroup, list[np.ndarray]]:
-        '''
-        Return the little group of momentum *k*.
-
-        For a dihedral group, non-zero *k* may be preserved by:
-        - the identity (always)
-        - a reflection whose axis is perpendicular to *k*
-        - C₂ (rotation by π) when *k* is at a TRIM point
-        '''
-        if reciprocal_basis is None and np.allclose(k, 0):
-            return self, [np.eye(2)]
-
-        ops = list(self)
-
-        if reciprocal_basis is None:
-            preserving = [op for op in ops if np.allclose(op @ k, k)]
-            others     = [op for op in ops if not np.allclose(op @ k, k)]
-        else:
-            preserving = [op for op in ops
-                          if self._k_preserved(op, k, reciprocal_basis)]
-            others     = [op for op in ops
-                          if not self._k_preserved(op, k, reciprocal_basis)]
-
-        m = len(preserving)
-
-        if m == 1:
-            return TrivialGroup(), others[:1] if others else [np.eye(2)]
-        if m == len(ops):
-            return self, [np.eye(2)]
-
-        sub = _Generic2DPointGroup(preserving)
-        return sub, others[:len(ops) // m] if others else [np.eye(2)]
-
 
 # ── D₃ ──────────────────────────────────────────────────────────────────────
 
@@ -539,7 +360,6 @@ class D3(DihedralGroup):
                 if cls == 'Cn':
                     return -1.0
                 return 0.0                      # reflections
-                    # reflections
         raise ValueError(f"Unknown irreducible representation: {irrp}")
 
 
