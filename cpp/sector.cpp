@@ -197,90 +197,152 @@ SectorVectors identity_vectors(int column_count)
     return out;
 }
 
+namespace {
+
+/**
+ * @detail Sums into a keyed slot with open addressing and linear probing.  The
+ *         point is locality: a column of the product produces a few thousand
+ *         entries whose keys are scattered over the whole basis, and a table of a
+ *         few hundred kilobytes answers every one of them from cache, where the
+ *         array indexed by the key itself would miss on each.  Slots are reset
+ *         through the list of the ones actually used, so a column costs its own
+ *         size and not the size of the table.
+ * @short A small cache-resident accumulator.
+ */
+class Accumulator {
+public:
+    /**
+     * @param capacity how many entries a column can hold, before probing.
+     * @detail The table is twice that, rounded up to a power of two, which keeps
+     *         the probe short without a load factor argument.
+     */
+    explicit Accumulator(int capacity)
+    {
+        int slots = 16;
+        while (slots < 2 * capacity) slots <<= 1;
+        keys_.assign(static_cast<std::size_t>(slots), -1);
+        values_.assign(static_cast<std::size_t>(slots), Complex{0.0, 0.0});
+        mask_ = slots - 1;
+    }
+
+    /** Forget every entry, touching only the slots that were used. */
+    void clear()
+    {
+        for (const int slot : used_) keys_[slot] = -1;
+        used_.clear();
+    }
+
+    /** Add *value* to the slot of *key*, creating it if this is the first time. */
+    void add(int key, Complex value)
+    {
+        std::size_t slot = static_cast<std::size_t>(key) * 0x9e3779b1u & mask_;
+        while (true) {
+            if (keys_[slot] == key) { values_[slot] += value; return; }
+            if (keys_[slot] < 0) {
+                keys_[slot] = key;
+                values_[slot] = value;
+                used_.push_back(static_cast<int>(slot));
+                return;
+            }
+            slot = (slot + 1) & mask_;
+        }
+    }
+
+    /**
+     * @param out overwritten with the entries, ascending by key.
+     * @detail The caller wants the column's entries in ascending order, and the
+     *         distinct keys are far fewer than the images that produced them, so
+     *         sorting here is cheap where sorting the images was not.
+     */
+    void take(std::vector<std::pair<int, Complex>>& out)
+    {
+        out.clear();
+        out.reserve(used_.size());
+        for (const int slot : used_) out.emplace_back(keys_[static_cast<std::size_t>(slot)],
+                                                      values_[static_cast<std::size_t>(slot)]);
+        std::sort(out.begin(), out.end(),
+                  [](const auto& left, const auto& right) { return left.first < right.first; });
+    }
+
+private:
+    std::vector<int> keys_;
+    std::vector<Complex> values_;
+    std::vector<int> used_;
+    std::size_t mask_ = 0;
+};
+
+}  // namespace
+
 SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
                                 const SparseColumns& columns, int threads)
 {
     const int n = basis.size();
     const int count = columns.columns();
 
-    // state -> the columns that contain it, which is the only structure of B the
-    // product needs on the right-hand side
-    std::vector<int> start(static_cast<std::size_t>(n) + 1, 0);
+    // Where a state sits in the momentum basis.  The columns are translation
+    // orbits, so every state is in exactly one of them: the map is one entry per
+    // state, and reading it is the only random access left in the product.  It
+    // replaces the three arrays that used to hold the same information apart,
+    // which made one lookup touch two unrelated cache lines.
+    struct Placement {
+        int column;
+        Complex weight;
+    };
+    std::vector<Placement> placement(static_cast<std::size_t>(n));
     for (int c = 0; c < count; ++c)
         for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a)
-            ++start[columns.indices[a] + 1];
-    for (int i = 0; i < n; ++i) start[i + 1] += start[i];
-    std::vector<int> column_of(start[n]);
-    std::vector<Complex> weight_of(start[n]);
-    std::vector<int> cursor(start.begin(), start.end() - 1);
-    for (int c = 0; c < count; ++c)
-        for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
-            const int at = cursor[columns.indices[a]]++;
-            column_of[at] = c;
-            weight_of[at] = columns.data[a];
-        }
+            placement[columns.indices[a]] = Placement{c, columns.data[a]};
 
-    // the terms are read into their tables once: the application below is then a
-    // lookup per site instead of a search through the local operator
+    // The terms are read into their tables once per call.
     std::vector<PreparedTerm> prepared;
     prepared.reserve(couplings.size());
     for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
 
-    // One column of the product: Y = H B is accumulated on the states with a
-    // scratch of the size of the basis and a stamp, reset through the touched
-    // list, so no dense fill and no sort; the second scratch accumulates B^T Y
-    // over the columns of the sector.  The loop over the columns is the parallel
-    // one: every worker builds its own scratch and writes only its own columns.
+    // One column of the product at a time: H is applied to the column's states,
+    // and the images are accumulated in a local list and merged in place.  The
+    // list holds one entry per image of one column -- a few thousand -- so it
+    // lives in cache, and no accumulator the size of the basis is touched at all;
+    // that is the difference between a random access per image and a local one.
+    // the widest column decides the size of the tables once, so no worker has to
+    // grow anything while it works
+    int widest = 0;
+    for (int c = 0; c < count; ++c)
+        widest = std::max(widest, columns.indptr[c + 1] - columns.indptr[c]);
+    const int capacity = widest * static_cast<int>(prepared.size()) + 1;
+
     std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(count));
     parallel_ranges(count, [&](int begin, int end) {
-        std::vector<Complex> applied(static_cast<std::size_t>(n), Complex{0.0, 0.0});
-        std::vector<int> state_stamp(static_cast<std::size_t>(n), -1);
-        std::vector<int> state_touched;
-        std::vector<Complex> summed(static_cast<std::size_t>(count), Complex{0.0, 0.0});
-        std::vector<int> column_stamp(static_cast<std::size_t>(count), -1);
-        std::vector<int> column_touched;
-        std::vector<std::pair<int, Complex>> images;
+        Accumulator images(capacity);
+        Accumulator scattered(capacity);
+        std::vector<std::pair<int, Complex>> merged;
         std::vector<int> digits;
         for (int c = begin; c < end; ++c) {
-            state_touched.clear();
+            images.clear();
             for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
                 const int state = columns.indices[a];
                 const Complex weight = columns.data[a];
                 basis.unpack_into(basis.state(state), digits);
-                images.clear();
+                merged.clear();
                 for (const PreparedTerm& term : prepared)
-                    apply_prepared(basis, term, basis.state(state), digits, images);
-                for (const auto& entry : images) {
-                    const int image = entry.first;
-                    if (state_stamp[image] != c) {
-                        state_stamp[image] = c;
-                        applied[image] = Complex{0.0, 0.0};
-                        state_touched.push_back(image);
-                    }
-                    applied[image] += weight * entry.second;
-                }
+                    apply_prepared(basis, term, basis.state(state), digits, merged);
+                for (const auto& entry : merged) images.add(entry.first, weight * entry.second);
             }
-            column_touched.clear();
-            for (const int state : state_touched) {
-                const Complex value = applied[state];
-                if (std::abs(value) < 1e-14) continue;
-                for (int t = start[state]; t < start[state + 1]; ++t) {
-                    const int column = column_of[t];
-                    if (column_stamp[column] != c) {
-                        column_stamp[column] = c;
-                        summed[column] = Complex{0.0, 0.0};
-                        column_touched.push_back(column);
-                    }
-                    summed[column] += std::conj(weight_of[t]) * value;
-                }
+            // the images of the column, scattered over the columns that hold them:
+            // that is B^T applied to the result of H
+            images.take(merged);
+            scattered.clear();
+            for (const auto& entry : merged) {
+                if (std::abs(entry.second) <= 1e-14) continue;
+                const Placement& where = placement[static_cast<std::size_t>(entry.first)];
+                scattered.add(where.column, std::conj(where.weight) * entry.second);
             }
-            std::sort(column_touched.begin(), column_touched.end());
             std::vector<std::pair<int, Complex>>& column = produced[c];
-            for (const int target : column_touched) {
-                const Complex value = summed[target];
-                if (std::abs(value) < 1e-14) continue;
-                column.emplace_back(target, value);
-            }
+            scattered.take(column);
+            column.erase(std::remove_if(column.begin(), column.end(),
+                                        [](const auto& entry) {
+                                            return std::abs(entry.second) <= 1e-14;
+                                        }),
+                         column.end());
         }
     }, threads);
 
