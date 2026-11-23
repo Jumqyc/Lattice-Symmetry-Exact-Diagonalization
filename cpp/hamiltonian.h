@@ -48,6 +48,49 @@ void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word
                 const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out);
 
 /**
+ * @detail A term is *monomial* when the local operator at every site sends one
+ *         digit to one digit -- a permutation of the local states, or a partial
+ *         one, times a phase.  Then the application needs no search at all: the
+ *         digit indexes the image and the coefficient, which is the same shape as
+ *         the group actions' MonomialAction and covers every term of the usual
+ *         lattice models, because ``XX``, ``YY`` and ``ZZ`` are separate terms
+ *         and each of them is monomial.
+ * @short A term prepared for application without searching.
+ */
+struct PreparedTerm {
+    const CouplingTerm* term = nullptr;
+    bool monomial = false;
+    std::vector<int> site;                 // sites of the term, in the order of the term
+    std::vector<int> shift;                // bit offset of each of them
+    std::vector<std::vector<int>> image;   // [position][digit], -1 where the term vanishes
+    std::vector<std::vector<Complex>> phase;  // the same
+};
+
+/**
+ * @param basis the computational basis, for the packing.
+ * @param term one term of the Hamiltonian.
+ * @detail The local operator of every site is read once into a table indexed by
+ *         the local digit.  A digit that appears twice in the ``in`` column means
+ *         the term is not monomial, and the table is dropped: the term then goes
+ *         through the general walk.
+ * @short Read a term into the tables that make its application direct.
+ */
+PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term);
+
+/**
+ * @param basis the computational basis.
+ * @param prepared the term, prepared.
+ * @param word the packed state to act on.
+ * @param digits the same state as local indices.
+ * @param out appended with ``(image index, coefficient)``.
+ * @detail Monomial terms are applied with one table lookup per site; anything
+ *         else falls back to the general walk.
+ * @short Append the images of one prepared term.
+ */
+void apply_prepared(const Basis& basis, const PreparedTerm& prepared, std::uint64_t word,
+                    const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out);
+
+/**
  * @param matrix a matrix in CSR form.
  * @detail The transposed matrix, also in CSR form; the sector assembly needs to
  *         walk columns as easily as rows.

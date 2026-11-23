@@ -89,6 +89,59 @@ void apply_term(const Basis& basis, const CouplingTerm& term, std::uint64_t word
     walk_term(basis, term, digits, 0, word, Complex{1.0, 0.0}, out);
 }
 
+PreparedTerm prepare_term(const Basis& basis, const CouplingTerm& term)
+{
+    PreparedTerm prepared;
+    prepared.term = &term;
+    const int bits = basis.bits();
+    const int sites = basis.sites();
+    const int local = basis.local_dim();
+    for (std::size_t position = 0; position < term.sites.size(); ++position) {
+        const int site = term.sites[position];
+        const LocalTerm& one_site = term.local[position];
+        std::vector<int> image(static_cast<std::size_t>(local), -1);
+        std::vector<Complex> phase(static_cast<std::size_t>(local), Complex{0.0, 0.0});
+        for (std::size_t entry = 0; entry < one_site.in.size(); ++entry) {
+            const int digit = one_site.in[entry];
+            if (image[digit] >= 0) {          // one digit, two images: not monomial
+                prepared.monomial = false;
+                return prepared;
+            }
+            image[digit] = one_site.out[entry];
+            phase[digit] = one_site.coeff[entry];
+        }
+        prepared.site.push_back(site);
+        prepared.shift.push_back(bits * (sites - 1 - site));
+        prepared.image.push_back(std::move(image));
+        prepared.phase.push_back(std::move(phase));
+    }
+    prepared.monomial = true;
+    return prepared;
+}
+
+void apply_prepared(const Basis& basis, const PreparedTerm& prepared, std::uint64_t word,
+                    const std::vector<int>& digits, std::vector<std::pair<int, Complex>>& out)
+{
+    if (!prepared.monomial) {
+        apply_term(basis, *prepared.term, word, digits, out);
+        return;
+    }
+    const int bits = basis.bits();
+    std::uint64_t image = word;
+    Complex coefficient{1.0, 0.0};
+    for (std::size_t position = 0; position < prepared.site.size(); ++position) {
+        const int digit = digits[prepared.site[position]];
+        const int target = prepared.image[position][digit];
+        if (target < 0) return;               // the term annihilates this state
+        const int shift = prepared.shift[position];
+        const std::uint64_t mask = ((1ull << bits) - 1ull) << shift;
+        image = (image & ~mask) | (static_cast<std::uint64_t>(target) << shift);
+        coefficient *= prepared.phase[position][digit];
+    }
+    const int target = basis.index(image);
+    if (target >= 0) out.emplace_back(target, coefficient);
+}
+
 SparseMatrix transpose(const SparseMatrix& matrix)
 {
     SparseMatrix out;

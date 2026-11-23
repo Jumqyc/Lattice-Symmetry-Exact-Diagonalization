@@ -213,6 +213,12 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
     by_column.rows = count;
     by_column.cols = count;
     by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
+    // the terms are read into their tables once: the application below is then a
+    // lookup per site instead of a search through the local operator
+    std::vector<PreparedTerm> prepared;
+    prepared.reserve(couplings.size());
+    for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
+
     std::vector<int> digits;                        // reused across the whole product
     for (int c = 0; c < count; ++c) {
         state_touched.clear();
@@ -221,8 +227,8 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
             const Complex weight = columns.data[a];
             basis.unpack_into(basis.state(state), digits);
             images.clear();
-            for (const CouplingTerm& term : couplings)
-                apply_term(basis, term, basis.state(state), digits, images);
+            for (const PreparedTerm& term : prepared)
+                apply_prepared(basis, term, basis.state(state), digits, images);
             for (const auto& entry : images) {
                 const int image = entry.first;
                 if (state_stamp[image] != c) {
