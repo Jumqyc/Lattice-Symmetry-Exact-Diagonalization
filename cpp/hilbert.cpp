@@ -78,20 +78,35 @@ void Basis::build_lookup()
         }
         return s;
     }();
-    if (space <= kDenseLimit) {
+    // A table of one int per word is the fastest lookup and is used while it is
+    // small; past that one bit per word plus a rank sample every 512 words is
+    // thirty times smaller and stays in cache, which is what a sector product
+    // cares about; past a bit vector of 128 MB even that is dropped for a hash.
+    if (space <= (1LL << 16)) {
         dense_limit_ = static_cast<int>(space);
-        dense_.assign(space, -1);
+        dense_.assign(static_cast<std::size_t>(space), -1);
         for (int i = 0; i < size(); ++i) dense_[states_[i]] = i;
-    } else {
-        sparse_.reserve(states_.size());
-        for (int i = 0; i < size(); ++i) sparse_[states_[i]] = i;
+        return;
     }
-}
-
-int Basis::digit(std::uint64_t word, int site) const
-{
-    const int shift = bits_ * (sites_ - 1 - site);
-    return static_cast<int>((word >> shift) & ((1ull << bits_) - 1ull));
+    if (space <= (1LL << 30)) {
+        dense_limit_ = static_cast<int>(space);
+        bitset_.assign(static_cast<std::size_t>(space + 63) / 64, 0);
+        for (int i = 0; i < size(); ++i)
+            bitset_[states_[i] >> 6] |= 1ull << (states_[i] & 63);
+        rank_.assign(static_cast<std::size_t>(space >> rank_shift_) + 2, 0);
+        const std::size_t words_per_block = static_cast<std::size_t>(1) << (rank_shift_ - 6);
+        int total = 0;
+        for (std::size_t block = 0; block < rank_.size(); ++block) {
+            rank_[block] = total;
+            const std::size_t begin = block * words_per_block;
+            const std::size_t end = std::min(begin + words_per_block, bitset_.size());
+            for (std::size_t word = begin; word < end; ++word)
+                total += __builtin_popcountll(bitset_[word]);
+        }
+        return;
+    }
+    sparse_.reserve(states_.size());
+    for (int i = 0; i < size(); ++i) sparse_[states_[i]] = i;
 }
 
 int Basis::index(std::uint64_t word) const
@@ -100,9 +115,29 @@ int Basis::index(std::uint64_t word) const
         if (word >= static_cast<std::uint64_t>(dense_limit_)) return -1;
         return dense_[word];
     }
+    if (!bitset_.empty()) {
+        if (word >= static_cast<std::uint64_t>(dense_limit_)) return -1;
+        if ((bitset_[word >> 6] & (1ull << (word & 63))) == 0) return -1;
+        // the rank: the sample of this block, then the words before the word
+        // itself, then the bits below the state inside it
+        const std::size_t block = static_cast<std::size_t>(word) >> rank_shift_;
+        int result = rank_[block];
+        const std::uint64_t begin = static_cast<std::uint64_t>(block) << rank_shift_;
+        for (std::uint64_t at = begin; at + 64 <= word; at += 64)
+            result += __builtin_popcountll(bitset_[at >> 6]);
+        result += __builtin_popcountll(bitset_[word >> 6] & ((1ull << (word & 63)) - 1ull));
+        return result;
+    }
     const auto it = sparse_.find(word);
     return it == sparse_.end() ? -1 : it->second;
 }
+
+int Basis::digit(std::uint64_t word, int site) const
+{
+    const int shift = bits_ * (sites_ - 1 - site);
+    return static_cast<int>((word >> shift) & ((1ull << bits_) - 1ull));
+}
+
 
 std::vector<int> Basis::unpack(std::uint64_t word) const
 {

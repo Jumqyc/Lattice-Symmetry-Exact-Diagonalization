@@ -50,6 +50,13 @@ public:
     /**
      * @param word packed basis state.
      * @return The index of *word* in the basis, or -1 if it is not in it.
+     * @detail Three representations, chosen by the size of the code space: a
+     *         direct table when it is small, a bit vector with a rank sample every
+     *         512 states when it is large, and a hash map when even the bit
+     *         vector would be huge.  The bit vector matters: a table of one int
+     *         per code-space word is tens of megabytes at five by five and every
+     *         lookup in it is a cache miss, while the bit vector and its samples
+     *         are a few megabytes and stay resident.
      */
     int index(std::uint64_t word) const;
 
@@ -74,9 +81,13 @@ private:
     int bits_ = 0;
     std::vector<int> charge_;
     std::vector<std::uint64_t> states_;
-    // a direct table when the whole code space fits, a hash map otherwise
+    // one bit per code-space word when that is cheaper than a table, and a hash
+    // map when even the bits would not fit
     std::vector<int> dense_;
     int dense_limit_ = 0;
+    std::vector<std::uint64_t> bitset_;
+    std::vector<int> rank_;                 // one entry per 512 words of code space
+    int rank_shift_ = 9;
     std::unordered_map<std::uint64_t, int> sparse_;
 };
 
