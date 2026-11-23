@@ -1,9 +1,12 @@
 *.aux
 *.bbl
 *.blg
+*.fdb_latexmk
+*.fls
 *.log
 *.gz
 *.out
+*.toc
 __pycache__/
 .venv/
 texput.log

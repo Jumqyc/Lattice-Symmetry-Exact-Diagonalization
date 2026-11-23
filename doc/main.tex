@@ -3,404 +3,883 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
 \usepackage{hyperref}
 \usepackage{mathrsfs}
 \usepackage{physics}
+
+\geometry{margin=1.1in}
+\hypersetup{hidelinks}
+
+\newcommand{\Hil}{\mathscr{H}}
+\newcommand{\Glatt}{G_{\mathrm{latt}}}
+\newcommand{\Gtr}{G_{\mathrm{tr}}}
+\newcommand{\Gpt}{G_{\mathrm{pt}}}
+\newcommand{\Gk}{G_{\mathbf{n}}}
+\newcommand{\Stab}{\operatorname{Stab}}
+\newcommand{\Ind}{\operatorname{Ind}}
+\newcommand{\Star}{\operatorname{Star}}
+\newcommand{\ee}{\mathrm{e}}
+\newcommand{\ii}{\mathrm{i}}
+
 \author{Yuchen Qian}
 \date{\today}
-\title{Symmetry in Exact diagonalization method}
+\title{Symmetry-resolved exact diagonalization of lattice models}
 
 \begin{document}
 \maketitle
-The central problem of many-body physics is to diagonalize the Hamiltonian $\mathcal{H}$ in the Hilbert space $\mathscr{H}$. To be explicit, in computational basis we have\begin{align}
-    \mathscr{H} = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L}\mid \sigma_i=1,\dots,d\}.
-\end{align}The problem with a naive approach is that $\mathscr{H}$ is exponentially large. Let $L$ be the lattice size and $d$ be the local Hilbert space dimension, the dimension of $\mathscr{H}$ is $d^L$. If the system has $\mathsf{U}(1)$ symmetry, then $\mathscr{H}$ is further decomposed into subspaces $\mathscr{H}_N$ with fixed particle number $N$, defined as\begin{align}
-    \mathscr{H}_N = \mathrm{span}\{\ket{\sigma_1\dots\sigma_L} \mid \sum_{i=1}^L \sigma_i = N\},
-\end{align} and the dimension of $\mathscr{H}_N$ is $\binom{L}{N}$, which is still exponentially large.
 
-To address such problem, we will use the representation theory\cite{fulton1991representation} to decompose the Hilbert space into irreducible representations of the symmetry group $G$ of the Hamiltonian $\mathcal{H}$.
+\begin{abstract}
+Exact diagonalization is limited by the size of the Hilbert space, and the
+symmetries of a lattice Hamiltonian are what make that space smaller. This note
+works out, in a form that can be implemented directly, the decomposition of the
+Hilbert space of a finite lattice model under its space group: translation
+sectors labelled by momentum, the little group at each momentum, the induced
+representations that complete the classification, and the isotypic projectors
+that produce an orthonormal basis in which the Hamiltonian is block diagonal.
+The treatment allows several orbits per unit cell, an action on the local
+orbitals that is a permutation up to phases, non-symmorphic elements, and the
+internal spin flip. The cost of each step is stated, and the numerical checks
+that pin the construction down are collected at the end.
+\end{abstract}
 
-We will assume $G$ is a finite group, and it acts on the Hilbert space $\mathscr{H}$ via a unitary representation $U: G \to U(\mathscr{H})$. What we mean by $\mathcal{H}$ has symmetry $G$ is that $\mathcal{H}$ commutes with the action of $G$, i.e. $[U(g),\mathcal{H}] = 0$ for all $g\in G$. By Schur's lemma, we know that $\mathcal{H}$ is block diagonal in the basis of irreducible representations of $G$. Hence we can diagonalize $\mathcal{H}$ in each irreducible representation separately, which reduces the computational cost significantly.
+\tableofcontents
 
-\section{Building the symmetry group}
+\section{Introduction}
 
-In our case, we consider two kinds of symmetry: the lattice symmetry that permutes the sites and the internal symmetry that performs a spin flip:\begin{align}
-    g\ket{\sigma_1\dots\sigma_L} &= \ket{\sigma_{g^{-1}(1)}\dots\sigma_{g^{-1}(L)}},\quad g\in G_{\mathrm{latt}}\\
-    \mathcal{F}\ket{\sigma_1\dots\sigma_L} &= \ket{(d-\sigma_1),\dots ,( d-\sigma_L)}
-\end{align}
-and the full symmetry group is $G = G_{\mathrm{latt}}\times \mathbb{Z}_2$. The lattice symmetry group $G_{\mathrm{latt}}$ is a semi-direct product of the translation group $G_{\mathrm{tr}}$ and the point group $G_{\mathrm{pt}}$, i.e. $G_{\mathrm{latt}} = G_{\mathrm{tr}}\rtimes G_{\mathrm{pt}}$, where $G_{\mathrm{tr}} = \mathbb{Z}_{N_1}\times\cdots\mathbb{Z}_{N_d}$ is a finite Abelian group and $G_{\mathrm{pt}}$ is a finite group.
+The Hilbert space of a lattice model with $L$ sites and local dimension $d$ has
+dimension $d^L$, and exact diagonalization needs the matrix elements of the
+Hamiltonian between all of them. Nothing about the Schr\"odinger equation
+requires that much work: a symmetry of the Hamiltonian splits the space into
+independent blocks, and a block of dimension $M$ costs $M^3$ instead of $d^{3L}$.
+The purpose of this note is to describe that splitting completely, for the
+symmetry group that a finite lattice actually has, in a form that is neither
+restricted to the cubic lattices of the textbooks nor to the symmorphic
+subgroup.
 
-In the following, we decouple the translational symmetry from the point group symmetry: we treat $G_{\mathrm{tr}}$ and $G_{\mathrm{pt}}$ as independent objects, each with its own action on the Hilbert space and its own representation theory. The semi-direct product structure $G_{\mathrm{latt}} = G_{\mathrm{tr}} \rtimes G_{\mathrm{pt}}$ is then built as a \emph{composition} of the two. This decoupling enables a two-step decomposition of the Hilbert space — first by momentum (translations), then by point group irreps (little group) — which is both conceptually clearer and computationally more efficient.
+The group in question is the space group of the finite lattice: translations by
+supercell vectors, rotations and reflections that preserve the supercell, and
+the combinations of a rotation with a fractional translation that a glide plane
+or a screw axis provides. It acts on the computational basis by permuting the
+sites and, at every site, by a monomial map on the local states; the latter is
+what allows a unit cell with several orbitals and a nontrivial action on them.
+An internal symmetry, the spin flip, is independent of all this and is treated
+separately.
 
-\subsection{Translation group \texorpdfstring{$G_{\mathrm{tr}}$}{G\_tr}}
+The decomposition proceeds in two steps, and the two steps are the reason the
+whole thing is practical. Translations form an abelian normal subgroup, so their
+irreducible representations are one-dimensional and labelled by momentum; the
+projector onto a momentum sector is a short sum of $|G_{\mathrm{tr}}|$ elements.
+What is left of the point group at that momentum is the little group, and inside
+a momentum sector its projector is also short. The representation theory involved
+is the classical one\cite{fulton1991representation,serre1977}. The alternative, projecting once
+with the idempotent of the full space-group irrep, requires summing over all
+$|G_{\mathrm{latt}}|$ elements for every sector; the two-step route replaces this by
+$|G_{\mathrm{tr}}| + |G_{\mathbf{n}}|$ and, more importantly, keeps every
+intermediate object small.
 
-The translation group is a finite Abelian group
-\begin{align}
-    G_{\mathrm{tr}} = \mathbb{Z}_{N_1} \times \mathbb{Z}_{N_2} \times \cdots \times \mathbb{Z}_{N_d},
-\end{align}
-where $N_i$ is the number of unit cells along the $i$-th lattice direction. An element $\mathbf{t} = (t_1, \dots, t_d) \in G_{\mathrm{tr}}$ corresponds to a translation by
-\begin{align}
-    \mathbf{t} = \sum_{i=1}^{d} t_i \mathbf{a}_i,
-\end{align}
-where $\mathbf{a}_i$ are the primitive lattice vectors. The group operation is vector addition modulo the supercell periodicity:
-\begin{align}
-    \mathbf{t}_1 + \mathbf{t}_2 \pmod{\text{supercell}}.
-\end{align}
+Sections~\ref{sec:setting} and~\ref{sec:actions} fix the conventions and the
+action of the group on the computational basis. Sections~\ref{sec:momentum}
+and~\ref{sec:little} develop the two steps, together with the induced
+representations that account for the sectors of one momentum star
+(Section~\ref{sec:induced}). Section~\ref{sec:blocks} turns the projectors into
+blocks, Section~\ref{sec:spin} adds the spin flip, and
+Sections~\ref{sec:algorithm} and~\ref{sec:checks} state the algorithm with its
+cost and list the numerical evidence that it is correct.
+Section~\ref{sec:pitfalls} collects the mistakes that this construction invites.
 
-\paragraph{Action on Hilbert space.}
-A translation $\mathbf{t} \in G_{\mathrm{tr}}$ acts on a basis state by permuting the site indices according to the translation. Concretely, if site $i$ is translated to site $j$, then
-\begin{align}
-    \mathbf{t} \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{t^{-1}(1)} \dots \sigma_{t^{-1}(L)}}.
-\end{align}
-This action is represented by a permutation matrix $P_{\mathbf{t}}$ on the computational basis.
+Throughout, $d$ is the spatial dimension (mostly $d=2$), and $L$ is the number of
+sites of the finite lattice, which is not the number of unit cells when a cell
+carries several orbits.
 
-\paragraph{Irreducible representations.}
-Since $G_{\mathrm{tr}}$ is Abelian, all its irreducible representations are one-dimensional and are labeled by the crystal momentum
-\begin{align}
-    \mathbf{k} \in \mathrm{BZ} = \left\{(k_1,\dots,k_d)\;\middle|\; k_i = 0, \frac{2\pi}{N_i}, \dots, \frac{2\pi(N_i-1)}{N_i}\right\}.
-\end{align}
-The character (and the representation itself) is
-\begin{align}
-    \chi_{\mathbf{k}}^{G_{\mathrm{tr}}}(\mathbf{t}) = e^{i \mathbf{k} \cdot \mathbf{t}}.
-\end{align}
-The number of distinct momentum labels is $|G_{\mathrm{tr}}| = \prod_i N_i$.
+\section{Setting and notation}\label{sec:setting}
 
-\paragraph{Projection onto momentum sectors.}
-The projector onto the subspace with momentum $\mathbf{k}$ is
-\begin{align}
-    \Pi_{\mathbf{k}} = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in G_{\mathrm{tr}}} \chi_{\mathbf{k}}^*(\mathbf{t}) \, \mathbf{t}.
-\end{align}
-Applying $\Pi_{\mathbf{k}}$ to the full Hilbert space $\mathscr{H}$ yields the momentum-$\mathbf{k}$ sector $\mathscr{H}_{\mathbf{k}}$. Since $[\mathcal{H}, \mathbf{t}] = 0$ for all $\mathbf{t} \in G_{\mathrm{tr}}$, the Hamiltonian is block-diagonal in momentum:
-\begin{align}
-    \mathcal{H} = \bigoplus_{\mathbf{k} \in \mathrm{BZ}} \mathcal{H}_{\mathbf{k}},
-\end{align}
-where $\mathcal{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathcal{H} \Pi_{\mathbf{k}}$ acts on $\mathscr{H}_{\mathbf{k}}$.
+\subsection{The lattice}
 
-This is the first step of the decoupled decomposition: using translations alone, we reduce the problem to diagonalizing $\mathcal{H}_{\mathbf{k}}$ independently for each $\mathbf{k}$. This is nothing but Bloch's theorem.
+A unit cell is spanned by the vectors $\mathbf{a}_1,\dots,\mathbf{a}_d$ and
+contains a finite set of sites, each specified by its position $\mathbf{p}$ in the
+cell and by a \emph{species} $s$. The species is the equivalence class that a
+symmetry must preserve: two sites of the same species may be exchanged by a
+symmetry, two sites of different species may not. This one bit of bookkeeping
+covers both the sublattices of a honeycomb and the inequivalent sites of an
+arbitrary multi-site cell, and it is the only place where the geometry of the
+cell enters the group theory.
 
-\subsection{Point group \texorpdfstring{$G_{\mathrm{pt}}$}{G\_pt}}
+The finite lattice is obtained by repeating the cell $N_i$ times along
+$\mathbf{a}_i$ and imposing periodic boundary conditions. Its supercell vectors
+are
+\begin{equation}
+  \mathbf{A}_i = N_i\,\mathbf{a}_i, \qquad i = 1,\dots,d,
+\end{equation}
+it contains $L = n_{\mathrm{cell}}\prod_i N_i$ sites, and a site is specified by
+its position in the cell together with the integer vector $\mathbf{c} \in
+\mathbb{Z}^d$ of the cell that contains it. Sites are numbered
+$j = 0,\dots,L-1$; the numbering is arbitrary but fixed once and for all, since
+it is the numbering that the basis vectors of the computer representation carry.
 
-The point group $G_{\mathrm{pt}}$ is a finite subgroup of $\mathrm{O}(d)$ (or $\mathrm{SO}(d)$ for proper rotations only). Its elements $r \in G_{\mathrm{pt}}$ act on real-space coordinates as
-\begin{align}
-    r : \mathbf{x} \mapsto r \mathbf{x}.
-\end{align}
+\subsection{The local space and the computational basis}
 
-\paragraph{Action on Hilbert space.}
-A point group operation $r \in G_{\mathrm{pt}}$ acts on a basis state by permuting the site indices according to the rotated positions. If site $i$ at position $\mathbf{x}_i$ is mapped by $r$ to the position $r\mathbf{x}_i$, which coincides with site $j$, then
-\begin{align}
-    r \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{r^{-1}(1)} \dots \sigma_{r^{-1}(L)}}.
-\end{align}
-This action is represented by a permutation matrix $P_r$.
+Each site carries a local space of dimension $d_{\mathrm{loc}}$, with an
+orthonormal basis $\ket{\sigma}$ indexed by $\sigma = 0,\dots,d_{\mathrm{loc}}-1$.
+The computational basis of the full Hilbert space consists of the product states
+\begin{equation}
+  \ket{\sigma_1\dots\sigma_L}, \qquad \sigma_j \in \{0,\dots,d_{\mathrm{loc}}-1\},
+\end{equation}
+and $\Hil$ is their span, of dimension $d_{\mathrm{loc}}^L$. A local charge
+$q(\sigma)$ is used to select a sector: the subspace with total charge $Q$ is
+spanned by the states with
+\begin{equation}
+  Q(\sigma_1\dots\sigma_L) = \sum_{j=1}^{L} q(\sigma_j) = Q .
+  \label{eq:charge}
+\end{equation}
+The charge is conserved by the models considered here (it is the magnetisation
+for a spin model), and fixing it reduces the dimension from $d_{\mathrm{loc}}^L$ to
+the coefficient of $x^Q$ in $\bigl(\sum_\sigma x^{q(\sigma)}\bigr)^L$.
 
-\paragraph{Action on momentum space.}
-The point group also acts on the Brillouin zone: $r \in G_{\mathrm{pt}}$ maps momentum $\mathbf{k}$ to $r\mathbf{k}$. This action partitions the Brillouin zone into \emph{stars}: the star of $\mathbf{k}$ is
-\begin{align}
-    \mathrm{Star}(\mathbf{k}) = \{ r\mathbf{k} \mid r \in G_{\mathrm{pt}} \},
-\end{align}
-where momenta related by a reciprocal lattice vector are identified (i.e., we work modulo the reciprocal lattice: $r\mathbf{k} \simeq \mathbf{k} + \mathbf{G}$ for some reciprocal lattice vector $\mathbf{G}$).
+\subsection{The Hamiltonian}
 
-\paragraph{Little group (stabilizer of \texorpdfstring{$\mathbf{k}$}{k}).}
-The little group of momentum $\mathbf{k}$ is the subgroup of $G_{\mathrm{pt}}$ that leaves $\mathbf{k}$ invariant (up to reciprocal lattice vectors):
-\begin{align}
-    G_{\mathbf{k}} = \{ r \in G_{\mathrm{pt}} \mid r\mathbf{k} \simeq \mathbf{k} \pmod{\text{reciprocal lattice}} \}.
-\end{align}
-The irreps of $G_{\mathbf{k}}$ are denoted by $\alpha$, with characters $\chi_{\alpha}^{G_{\mathbf{k}}}(r)$ for $r \in G_{\mathbf{k}}$. Since $G_{\mathbf{k}}$ is a subgroup of $G_{\mathrm{pt}}$, its irreps are computed independently of any translation information.
+The Hamiltonian is a sum of local terms,
+\begin{equation}
+  H = \sum_{a} J_a\, O_a, \qquad
+  O_a = o^{(a)}_{j_1}\otimes \dots \otimes o^{(a)}_{j_r},
+  \label{eq:hamiltonian}
+\end{equation}
+where each $o^{(a)}_{j}$ acts on the local space of site $j$ and is the identity
+elsewhere, $r$ is small (two, for a two-body interaction), and $J_a$ is real for
+a Hermitian $H$. A term that acts on \emph{different} sites may have different
+local operators on each of them, which is how an anisotropic or a
+symmetry-broken coupling is written; a term that acts on the same pair of sites
+in several ways is simply listed several times.
 
-\paragraph{Orbit-stabilizer decomposition.}
-The full point group decomposes into cosets of the little group:
-\begin{align}
-    G_{\mathrm{pt}} = \bigsqcup_{g \in G_{\mathrm{pt}} / G_{\mathbf{k}}} g \, G_{\mathbf{k}},
-\end{align}
-where $g$ runs over a set of left-coset representatives. The number of cosets is the size of the star: $|G_{\mathrm{pt}}| / |G_{\mathbf{k}}| = |\mathrm{Star}(\mathbf{k})|$.
+\section{The action of the group on the basis}\label{sec:actions}
 
-\subsection{Lattice group \texorpdfstring{$G_{\mathrm{latt}} = G_{\mathrm{tr}} \rtimes G_{\mathrm{pt}}$}{G\_latt}}
+\subsection{Elements of the space group}
 
-Now we compose the two ingredients. An element of $G_{\mathrm{latt}}$ is a pair $(\mathbf{t}, r)$ with $\mathbf{t} \in G_{\mathrm{tr}}$ and $r \in G_{\mathrm{pt}}$.
+An element of the space group is an affine map of the plane,
+\begin{equation}
+  g = (\mathbf{t}, R): \quad \mathbf{x}\mapsto R\mathbf{x} + \mathbf{t},
+  \label{eq:affine}
+\end{equation}
+with $R$ orthogonal and $\mathbf{t}$ a translation. The translation part need not
+be a lattice vector: a glide plane is a reflection with
+$\mathbf{t}$ equal to half a lattice vector, and a screw axis is a rotation with
+a fractional translation along the axis. Such elements are included from the
+start. Composition is
+\begin{equation}
+  (\mathbf{t}_1,R_1)(\mathbf{t}_2,R_2) = (\mathbf{t}_1 + R_1\mathbf{t}_2,\,
+  R_1R_2),
+  \qquad
+  (\mathbf{t},R)^{-1} = (-R^{-1}\mathbf{t},\,R^{-1}),
+  \label{eq:composition}
+\end{equation}
+so that the map on the left is applied last.
 
-\paragraph{Group structure.}
-The multiplication law reflects that translations and rotations do not commute: rotating then translating is equivalent to translating then rotating by the rotated translation vector:
-\begin{align}
-    (\mathbf{t}_1, r_1)(\mathbf{t}_2, r_2) = (\mathbf{t}_1 + r_1 \mathbf{t}_2, \; r_1 r_2).
-\end{align}
-The inverse is
-\begin{align}
-    (\mathbf{t}, r)^{-1} = (-r^{-1}\mathbf{t}, \; r^{-1}).
-\end{align}
-The group order is $|G_{\mathrm{latt}}| = |G_{\mathrm{tr}}| \cdot |G_{\mathrm{pt}}|$.
+Pure translations form the abelian subgroup $G_{\mathrm{tr}} \cong \mathbb{Z}_{N_1}
+\times\cdots\times \mathbb{Z}_{N_d}$, and the rotations that appear in
+$G_{\mathrm{latt}}$ form the point group $\Gpt$. For a symmorphic group,
+$\Glatt = \Gtr \rtimes \Gpt$; for a non-symmorphic one the group is not a semidirect
+product, but every element is still a pair $(\mathbf{t},R)$ and the composition
+law \eqref{eq:composition} is unchanged. Nothing below needs the semidirect
+structure except when we count elements, and there the counts are by
+construction.
 
-\paragraph{Action on Hilbert space.}
-By composition, $(\mathbf{t}, r)$ acts as: first rotate by $r$, then translate by $\mathbf{t}$:
-\begin{align}
-    (\mathbf{t}, r) \ket{\sigma_1 \dots \sigma_L} = \ket{\sigma_{(\mathbf{t}, r)^{-1}(1)} \dots \sigma_{(\mathbf{t}, r)^{-1}(L)}}.
-\end{align}
-In terms of permutations, $P_{(\mathbf{t}, r)} = P_{\mathbf{t}} \circ P_r$.
+\subsection{Which elements are symmetries of the finite lattice}
 
-\paragraph{Irreducible representations (induced from \texorpdfstring{$G_{\mathrm{tr}}$}{G\_tr}).}
-The irreps of $G_{\mathrm{latt}}$ are obtained by the method of \emph{induced representations}. Starting from the one-dimensional irrep $\mathbf{k}$ of the Abelian normal subgroup $G_{\mathrm{tr}}$, we induce it to the full group $G_{\mathrm{latt}}$ using the little group $G_{\mathbf{k}}$ of the point group action.
+The infinite lattice is invariant under a continuum of translations, but the
+finite torus is not, and two conditions decide whether a given element survives.
 
-Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with character $\chi_{\alpha}^{G_{\mathbf{k}}}$. The induced character of the irrep $(\mathbf{k}, \alpha)$ of $G_{\mathrm{latt}}$ is
-\begin{align}
-    \boxed{\;
-    \chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}(\mathbf{t}, r)
-    = \sum_{g \in G_{\mathrm{pt}} / G_{\mathbf{k}}}
-      \chi_{\mathbf{k}}^{G_{\mathrm{tr}}}(g \cdot \mathbf{t}) \;
-      \tilde{\chi}_{\alpha}^{G_{\mathbf{k}}}(g r g^{-1})
-    \;},
-\end{align}
-where
-\begin{align}
-    \tilde{\chi}_{\alpha}^{G_{\mathbf{k}}}(x) =
-    \begin{cases}
-        \chi_{\alpha}^{G_{\mathbf{k}}}(x), & \text{if } x \in G_{\mathbf{k}}, \\
-        0, & \text{otherwise}.
-    \end{cases}
-\end{align}
-The sum runs over a set of left-coset representatives of $G_{\mathbf{k}}$ in $G_{\mathrm{pt}}$.
+First, the rotation must preserve the supercell lattice, since otherwise it maps
+the torus onto a different torus. It does so exactly when it maps every supercell
+vector to an integer combination of them,
+\begin{equation}
+  R\,\mathbf{A}_i = \sum_{j=1}^{d} M_{ji}\,\mathbf{A}_j,
+  \label{eq:intmat}
+\end{equation}
+with $M$ an integer matrix of determinant $\pm 1$. The matrix $M$ is computed once
+per operation and is the only information about the rotation that the momentum
+bookkeeping requires.
 
-The dimension of the irrep $(\mathbf{k}, \alpha)$ is
-\begin{align}
-    d_{\mathbf{k}, \alpha} = \frac{|G_{\mathrm{pt}}|}{|G_{\mathbf{k}}|} \cdot d_{\alpha},
-\end{align}
-where $d_{\alpha} = \chi_{\alpha}^{G_{\mathbf{k}}}(e)$ is the dimension of the little group irrep.
+Second, the affine map must permute the sites. For every site $j$ there must be
+exactly one site $\pi_g(j)$ of the same species with
+\begin{equation}
+  \mathbf{x}_{\pi_g(j)} \equiv R\,\mathbf{x}_j + \mathbf{t}
+  \pmod{\text{supercell lattice}},
+  \label{eq:sitemap}
+\end{equation}
+and the map $j \mapsto \pi_g(j)$ must be a bijection. A position search that only
+looks in a neighbourhood of the cell fails here: a legitimate operation may send
+a site to a periodic image far outside the cell that was searched. Comparing
+fractional coordinates modulo the supercell, on the other hand, is exact, and it
+is what makes multi-site cells with several orbits work.
 
-\paragraph{Two-step projection.}
-The crucial advantage of the decoupled formulation is that we can decompose the Hilbert space in two sequential steps rather than one expensive projection:
+The set of elements that pass both tests is closed under composition and
+inversion, so it forms a group; it is this group, of order
+$|\Glatt| = |\Gtr|\,|\Gpt|$, that is used below. Note that the point group of the
+finite torus can be smaller than that of the infinite lattice: a fourfold rotation
+is a symmetry of the square lattice but not of a $2\times4$ torus, whose aspect
+ratio it would change. The first test above detects this without any case
+analysis.
+
+\subsection{The action on the computational basis}
+
+A space-group element permutes the sites, and at each site it acts on the local
+state. The two combine into
+\begin{equation}
+  U(g)\ket{\sigma_1\dots\sigma_L} = \varphi_g(\sigma)\,
+  \ket{\sigma'_1\dots\sigma'_L},
+  \qquad
+  \sigma'_j = \rho_{g,j}\bigl(\sigma_{\pi_g^{-1}(j)}\bigr) ,
+  \label{eq:action}
+\end{equation}
+where $\rho_{g,j}$ is a local \emph{monomial} map: it sends one local basis state
+to one local basis state times a phase, and $\varphi_g(\sigma)$ is the product of
+those phases. The action is therefore a permutation of the computational basis up
+to phases, and it is a genuine representation, $U(g)U(h) = U(gh)$.
+
+The monomial requirement is a real restriction on the local basis, and it is worth
+seeing what it excludes. Take a single site with two $p$ orbitals and a
+fourfold rotation. In the Cartesian basis $(p_x,p_y)$ the rotation acts as the
+real matrix $\bigl(\begin{smallmatrix}0&-1\\1&0\end{smallmatrix}\bigr)$, and a basis state
+$\ket{p_x}$ is sent to a superposition of the two orbitals; the image of a
+product state is then a sum of product states, and the ``basis'' of adapted
+vectors is no longer indexed by single orbit representatives. In the circular
+basis $p_\pm = (p_x\pm \ii p_y)/\sqrt2$ the same rotation is diagonal,
+$R\ket{p_\pm} = \ee^{\mp\ii\theta}\ket{p_\pm}$, and a reflection exchanges the
+two. In this basis the action is monomial, and the whole construction goes
+through. The general rule is that one works in the local basis that diagonalizes
+the abelian part of the local representation and permutes the rest, which for
+two-dimensional orbitals is the basis of circular harmonics
+$(x\pm\ii y)^m$: a rotation multiplies them by a phase and a reflection exchanges
+$m$ with $-m$\cite{tinkham1964}.
+
+Two elements of the group are special enough to name. The identity acts
+trivially. A translation by the integer vector $\mathbf{c}$ acts as
+\begin{equation}
+  U(\mathbf{c})\ket{\sigma_1\dots\sigma_L} = \ket{\sigma'_1\dots\sigma'_L},
+  \qquad
+  \sigma'_{j} = \sigma_{\pi_{\mathbf{c}}^{-1}(j)},
+  \label{eq:translation}
+\end{equation}
+with no phase, since a translation does not touch the local states.
+
+\section{Translation sectors}\label{sec:momentum}
+
+\subsection{Characters and momentum labels}
+
+Because $G_{\mathrm{tr}}$ is abelian, its irreducible representations are
+one-dimensional and labelled by an integer vector $\mathbf{n} = (n_1,\dots,n_d)$
+with $n_i = 0,\dots,N_i-1$:
+\begin{equation}
+  \chi_{\mathbf{n}}(\mathbf{c}) = \exp\biggl(2\pi \ii \sum_{i=1}^{d}
+  \frac{n_i c_i}{N_i}\biggr).
+  \label{eq:char}
+\end{equation}
+The physical momentum is $\mathbf{k} = \sum_i (n_i/N_i)\mathbf{b}_i$, with
+$\mathbf{b}_i$ the reciprocal vectors of the unit cell, so that
+$\chi_{\mathbf{n}}(\mathbf{c}) = \ee^{\ii\mathbf{k}\cdot\mathbf{t}_{\mathbf{c}}}$;
+the label $\mathbf{n}$ is the more convenient variable, because it is an integer
+and every comparison below is a comparison modulo $N_i$.
+
+\subsection{The projector and the sector}
+
+The projector onto momentum $\mathbf{n}$ is
+\begin{equation}
+  P_{\mathbf{n}} = \frac{1}{|\Gtr|}\sum_{\mathbf{c} \in \Gtr}
+  \chi_{\mathbf{n}}^{*}(\mathbf{c})\, U(\mathbf{c}),
+  \label{eq:Pn}
+\end{equation}
+and $P_{\mathbf{n}}P_{\mathbf{n}'} = \delta_{\mathbf{n}\mathbf{n}'}P_{\mathbf{n}}$,
+$\sum_{\mathbf{n}}P_{\mathbf{n}} = \mathbb{1}$. For a Hamiltonian that commutes
+with translations, $[H,P_{\mathbf{n}}] = 0$, and the Hilbert space splits as
+\begin{equation}
+  \Hil = \bigoplus_{\mathbf{n}} \Hil_{\mathbf{n}}, \qquad
+  \Hil_{\mathbf{n}} = P_{\mathbf{n}}\Hil .
+\end{equation}
+This is Bloch's theorem for a finite torus, stated as a projector; the
+momentum sector is the standard starting point of symmetry-resolved exact
+diagonalization\cite{sandvik2010}.
+
+\subsection{An orthonormal basis of a momentum sector}
+
+Translations act on the computational basis by permutation, so they partition it
+into orbits. Let $\mathcal{O}(x)$ be the orbit of the basis state $\ket{x}$,
+$x$ its chosen representative (the smallest state, say), and
+$\Stab(x) = \{\mathbf{c} : U(\mathbf{c})\ket{x} = \ket{x}\}$ its stabilizer in
+$G_{\mathrm{tr}}$. The state
+\begin{equation}
+  \ket{\mathbf{n};x} = \frac{1}{\mathcal{N}_{\mathbf{n}}(x)}\,P_{\mathbf{n}}\ket{x}
+  \label{eq:adapt}
+\end{equation}
+belongs to $\Hil_{\mathbf{n}}$ whenever its norm does not vanish, and
+\begin{equation}
+  \bigl(\mathcal{N}_{\mathbf{n}}(x)\bigr)^2 = \mel{x}{P_{\mathbf{n}}}{x}
+  = \frac{1}{|\Gtr|}\sum_{\mathbf{c}\in\Stab(x)}
+  \chi_{\mathbf{n}}^{*}(\mathbf{c}).
+  \label{eq:norm}
+\end{equation}
+For a generic momentum the stabilizer is trivial, the norm is
+$|\Gtr|^{-1/2}$, and nothing is lost. At a symmetric momentum the sum in
+\eqref{eq:norm} can vanish; the orbit then contributes nothing to that sector,
+and \eqref{eq:adapt} is discarded. This is not an accident to be patched: a
+momentum sector that no state can carry is simply empty, and the counting below
+accounts for it automatically.
+
+The vectors \eqref{eq:adapt} are orthonormal. Two states in different orbits are
+related by no translation, so their projectors have disjoint support in the
+computational basis; two states in the same orbit have been identified, and the
+remaining factor is the normalization. The collection over all orbits with
+$\mathcal{N}_{\mathbf{n}}(x)\neq 0$ is therefore an orthonormal basis of
+$\Hil_{\mathbf{n}}$, of dimension $M_{\mathbf{n}}$ equal to the number of such
+orbits, and
+\begin{equation}
+  \sum_{\mathbf{n}} M_{\mathbf{n}} = d_{\mathrm{loc}}^{L} .
+\end{equation}
+
+\subsection{The Hamiltonian in a momentum sector}
+
+Writing the basis \eqref{eq:adapt} as the columns of a matrix $B_{\mathbf{n}}$,
+the block is
+\begin{equation}
+  \bigl(H_{\mathbf{n}}\bigr)_{xx'} = \mel{\mathbf{n};x}{H}{\mathbf{n};x'}
+  = \frac{1}{\mathcal{N}_{\mathbf{n}}(x)\mathcal{N}_{\mathbf{n}}(x')}
+  \frac{1}{|\Gtr|}\sum_{\mathbf{c}}
+  \chi_{\mathbf{n}}^{*}(\mathbf{c})\,\mel{x}{H\,U(\mathbf{c})}{x'},
+  \label{eq:Hn}
+\end{equation}
+where the step uses $[H,U(\mathbf{c})] = 0$ and reduces the double sum over
+translations to a single one. In practice one does not evaluate
+\eqref{eq:Hn} element by element: $B_{\mathbf{n}}$ is sparse, with at most
+$|\Gtr|$ entries per column, and $H_{\mathbf{n}} = B_{\mathbf{n}}^{\dagger} H
+B_{\mathbf{n}}$ is formed as a sparse product, whose cost is that of the
+nonzeros of the intermediate $HB_{\mathbf{n}}$.
+
+\section{The point group at a fixed momentum}\label{sec:little}
+
+\subsection{How a rotation acts on the label}
+
+Let $R$ be a point-group operation and $M$ the integer matrix of
+\eqref{eq:intmat}. A translation by $\mathbf{c}$ moves a position
+$\mathbf{x}$ to $\mathbf{x} + \sum_i c_i\mathbf{A}_i$; conjugating it by $R$ gives
+the translation by the rotated vector,
+\begin{equation}
+  R\Bigl(\sum_i c_i\mathbf{A}_i\Bigr) = \sum_j (M\mathbf{c})_j\,\mathbf{A}_j,
+  \qquad (M\mathbf{c})_j = \sum_i M_{ji}c_i ,
+  \label{eq:Mpos}
+\end{equation}
+so translation labels transform as $\mathbf{c}\mapsto M\mathbf{c}$. Momentum
+labels are dual to them: the character must be invariant,
+$\chi_{\mathbf{n}}(M\mathbf{c}) = \chi_{M^{T}\mathbf{n}}(\mathbf{c})$, hence
+\begin{equation}
+  \mathbf{n} \mapsto M^{T}\mathbf{n}, \qquad
+  (M^{T}\mathbf{n})_i = \sum_j M_{ji}\,n_j .
+  \label{eq:Mmom}
+\end{equation}
+
+\subsection{The little group, and the trap that it hides}
+
+The little group of $\mathbf{n}$ is the subgroup of the point group that leaves
+the label invariant,
+\begin{equation}
+  \Gk = \{\,R \in \Gpt : M^{T}(R)\,\mathbf{n} \equiv \mathbf{n}
+  \pmod{N_i}\ \text{for every } i\,\}.
+  \label{eq:little}
+\end{equation}
+The congruence is taken component by component modulo $N_i$, and it is essential
+that it is taken that way. Because the labels live in
+$\mathbb{Z}_{N_1}\times\cdots\times\mathbb{Z}_{N_d}$, one is tempted to state the
+condition as ``$R\mathbf{k}$ equals $\mathbf{k}$ up to a reciprocal lattice
+vector''. On a finite torus that test is empty: the allowed momenta are already
+integer combinations of the \emph{supercell} reciprocal vectors
+$\mathbf{b}_i/N_i$, so every allowed momentum differs from every other by a
+supercell reciprocal lattice vector, and the condition is satisfied by every
+operation at every momentum. The little group then comes out equal to the whole
+point group, the point-group step of the decomposition does nothing, and the
+sector labels it produces are not labels of anything.
+
+The size of the effect is easy to state. For the $4\times4$ square lattice with
+$D_4$ there are $16$ momenta and $8$ operations, so $128$ pairs $(\mathbf{n},R)$;
+the correct test selects $2\cdot 8 + 2\cdot 4 + 12\cdot 2 = 48$ of them, with
+little groups of order $8$ at $\Gamma$ and at $(2,2)$, of order $4$ at $(2,0)$
+and $(0,2)$, and of order $2$ at the remaining twelve labels, while the vacuous
+test selects all $128$.
+
+\subsection{The action inside a sector, and the Bloch phase}
+
+Assume now that $R \in \Gk$. Since $U(R)$ commutes with $P_{\mathbf{n}}$ up to the
+relabelling \eqref{eq:Mmom}, and $R$ fixes the label, $U(R)$ maps
+$\Hil_{\mathbf{n}}$ onto itself. On the adapted basis it acts as a \emph{phased}
+permutation:
+\begin{equation}
+  U(R)\ket{\mathbf{n};x} = \omega_{R}(x)\,\ket{\mathbf{n};x'}, \qquad
+  |\omega_R(x)| = 1 .
+  \label{eq:phased}
+\end{equation}
+The phase is not a convention of the diagonalization; it is fixed by the
+definition \eqref{eq:adapt} and can be read off. If $U(R)\ket{x} =
+\varphi\ket{x_1}$ and $\ket{x_1} = U(\mathbf{c}_0)\ket{x'}$ relates the image
+state to the representative of its orbit, then
+\begin{equation}
+  \omega_R(x) = \varphi\,\chi_{\mathbf{n}}(\mathbf{c}_0)\,
+  \frac{\mathcal{N}_{\mathbf{n}}(x')}{\mathcal{N}_{\mathbf{n}}(x)} ,
+\end{equation}
+because $P_{\mathbf{n}}$ acting on a translated state multiplies by the Bloch
+phase $\chi_{\mathbf{n}}(\mathbf{c}_0)$. Keeping this phase is a matter of
+correctness rather than elegance: with unit phases in its place the sector
+Hamiltonians are not the restriction of $H$, and the spectra are wrong by
+amounts of order the bandwidth: on the $3\times3$ square lattice with $D_4$,
+dropping the phase moved the spectrum by $1.8$.
+
+Because $U(R)$ is a permutation up to phases, the sector carries a genuine
+representation of $\Gk$ on $\mathbb{C}^{M_{\mathbf{n}}}$: each element is a
+monomial matrix, and no dense matrix is needed to store it.
+
+\subsection{Non-symmorphic elements}
+
+The criterion \eqref{eq:little} uses only $R$, not the translation part of $g$.
+This is not an oversight. The fractional translation of a glide or a screw acts
+on positions and therefore on the labels only through $R$; on states it
+contributes a phase that is already contained in the monomial action
+\eqref{eq:action} and, inside a sector, in the phase \eqref{eq:phased}. So the
+label bookkeeping is exactly as for the symmorphic case, and the non-symmorphic
+character of the element reappears where it belongs, in the phases.
+
+\subsection{Induced representations}\label{sec:induced}
+
+The sectors labelled by one momentum are not the whole story: the irreducible
+representations of the space group collect the whole \emph{star} of momenta
+$\{\mathbf{n}'\}$ related to $\mathbf{n}$ by the point group. The classification
+is Mackey's induction\cite{serre1977,bc1972}, and it is worth recording because it
+is what makes the bookkeeping of dimensions consistent.
+
+Let $H_{\mathbf{n}}$ be the subgroup of $\Glatt$ of elements whose rotation lies in
+$\Gk$; its elements are the pairs $(\mathbf{t}_{\mathbf{c}}, R)$ with
+$R\in\Gk$. Its irreducible representations are labelled by $\alpha$:
+\begin{equation}
+  \rho_{\mathbf{n},\alpha}(\mathbf{t}_{\mathbf{c}}, R) =
+  \chi_{\mathbf{n}}(\mathbf{c})\,\chi_{\alpha}(R).
+  \label{eq:rho}
+\end{equation}
+This is a representation precisely because of the little-group condition: for it
+to be a homomorphism one needs
+$\chi_{\mathbf{n}}(\mathbf{c}) = \chi_{\mathbf{n}}(M(R)\mathbf{c})$, that is
+$M(R)^{T}\mathbf{n}\equiv\mathbf{n}$, which is \eqref{eq:little}. The
+irreducibility condition and the validity of the induced representation are
+therefore the same equation.
+
+Let $S$ be a set of left coset representatives of $\Gk$ in $\Gpt$ and write
+$s = (0,R_s)$. The induced character is, by definition,
+\begin{equation}
+  \chi^{\Glatt}_{\mathbf{n},\alpha}(g) = \sum_{s\in S}
+  \widetilde{\chi}_{\mathbf{n},\alpha}(s^{-1}gs),
+  \qquad
+  \widetilde{\chi}(h) =
+  \begin{cases}
+    \chi(h), & h \in H_{\mathbf{n}},\\
+    0, & \text{otherwise},
+  \end{cases}
+\end{equation}
+and evaluating $s^{-1}(\mathbf{t}_{\mathbf{c}},R)s$ with \eqref{eq:composition}
+gives
+\begin{equation}
+  \boxed{\;
+  \chi^{\Glatt}_{\mathbf{n},\alpha}(\mathbf{t}_{\mathbf{c}}, R)
+  = \sum_{s\in S}
+  \chi_{\mathbf{n}}\bigl(M(R_s)^{-1}\mathbf{c}\bigr)\;
+  \widetilde{\chi}_{\alpha}\bigl(R_s^{-1} R R_s\bigr)
+  \;}
+  \label{eq:indchar}
+\end{equation}
+with $\widetilde{\chi}_\alpha$ extended by zero outside $\Gk$. Its value at the
+identity is the dimension,
+\begin{equation}
+  d_{\mathbf{n},\alpha} = \frac{|\Gpt|}{|\Gk|}\,d_{\alpha} = |\Star(\mathbf{n})|\,d_{\alpha},
+  \label{eq:dim}
+\end{equation}
+and the induced characters are orthonormal,
+$\langle\chi_{\mathbf{n},\alpha},\chi_{\mathbf{n}',\alpha'}\rangle_{\Glatt} =
+\delta_{\mathbf{n}\mathbf{n}'}\delta_{\alpha\alpha'}$ with the inner product normalized by $|\Glatt|$, provided the sum
+runs over one momentum per star. That restriction is not cosmetic: summing over
+every momentum in the Brillouin zone instead counts each irreducible
+representation once per member of its star. For the $4\times4$ square lattice
+with $D_4$ the unrestricted sum of $d^2$ gives $432$ where the group has order
+$128$.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+model & $L$ & $|\Gtr|$ & $|\Gpt|$ & $|\Glatt|$ & stars & irreps \\
+\midrule
+$3\times3$ square, $D_4$ & 9 & 9 & 8 & 72 & 3 & 9 \\
+$3\times3$ triangular, $D_6$ & 9 & 9 & 12 & 108 & 3 & 11 \\
+$4\times4$ square, $D_4$ & 16 & 16 & 8 & 128 & 6 & 20 \\
+\bottomrule
+\end{tabular}
+\caption{Space groups of three finite lattices, and the number of momentum stars
+and of irreducible representations obtained by induction. In all three cases the
+sum of $d_{\mathbf{n},\alpha}^2$ over one momentum per star equals $|\Glatt|$.}
+\label{tab:groups}
+\end{table}
+
+Two remarks connect \eqref{eq:indchar} with the computation.
+
+First, the sectors produced in Section~\ref{sec:momentum} and
+Section~\ref{sec:little} are not the irreducible representations
+\eqref{eq:indchar}; they are the pieces into which one irreducible
+representation splits when it is restricted to the translations. An induced
+representation of dimension $|\Star(\mathbf{n})|d_\alpha$ contributes a sector
+of dimension $m_{\mathbf{n},\alpha}d_\alpha$ at each momentum of its star, with
+the same multiplicity $m_{\mathbf{n},\alpha}$ for all of them, and the sum of
+$d_{\mathbf{n},\alpha}^2$ over the star is the sum of the sector dimensions.
+The decomposition of the Hilbert space is complete either way; the sectors are
+what one diagonalizes, and the induced representations are what one counts
+with.
+
+Second, the formula \eqref{eq:indchar} is often written with the inverses
+elsewhere, summing over a \emph{right} transversal with $R_s R R_s^{-1}$ and
+$\mathbf{c}$ rather than $M^{-1}\mathbf{c}$. The two forms differ by the
+relabelling $s\mapsto s^{-1}$ and are the same sum. What matters in either form
+is that $S$ is a transversal: one representative per coset, no repeats. A set of
+operations that merely avoids the little group is not a transversal, and the
+resulting sum is neither a character nor an integer.
+
+\section{Isotypic blocks}\label{sec:blocks}
+
+\subsection{The projector onto an irrep}
+
+Within the momentum sector the little group acts by phased permutations
+\eqref{eq:phased}, so the projector onto the $\alpha$-isotypic component is the
+familiar average
+\begin{equation}
+  \Pi_{\alpha} = \frac{d_\alpha}{|\Gk|}\sum_{R\in\Gk}
+  \chi_\alpha^{*}(R)\,U(R).
+  \label{eq:Pi}
+\end{equation}
+It is Hermitian and idempotent, $\Pi_\alpha^2 = \Pi_\alpha$ and
+$\Pi_\alpha^{\dagger} = \Pi_\alpha$, and $\sum_\alpha \Pi_\alpha = \mathbb{1}$
+inside the sector.
+
+\subsection{Orbits, and why the projector is cheap}
+
+The action of $\Gk$ on the $M_{\mathbf{n}}$ columns of the sector partitions them
+into orbits. Because $\Pi_\alpha$ commutes with every $U(R)$, it does not mix
+orbits: $\Pi_\alpha$ maps the span of an orbit onto itself. This observation is
+what makes the projection practical, and it is worth spelling out.
+
+Restricted to one orbit of size $o$, the operator \eqref{eq:Pi} is an $o\times o$
+Hermitian matrix that can be written down from the phases \eqref{eq:phased}
+alone. Its eigenvectors with eigenvalue $1$ are an orthonormal basis of the
+$\alpha$-isotypic component of that orbit's span; its other eigenvalues vanish.
+Diagonalizing $o\times o$ matrices and collecting the eigenvectors with
+eigenvalue $1$ therefore produces an orthonormal basis $V$ of the whole
+$\alpha$-isotypic component, because orbits are disjoint and vectors supported on
+different orbits are orthogonal. The cost is
+\begin{equation}
+  \sum_{\text{orbits}}\Bigl(|\Gk|\,o^{2} + o^{3}\Bigr), \qquad o \le |\Gk| \le |\Gpt| ,
+\end{equation}
+and it does not grow with the sector dimension $M_{\mathbf{n}}$: the largest
+matrix that is ever diagonalized has the size of the little group, twelve for
+$D_6$.
+
+The alternative, projecting each basis vector and then orthonormalizing the
+result, is both more expensive and more delicate: for $d_\alpha > 1$ the
+projected vectors are neither orthogonal nor independent, and the Gram matrix
+that repairs them is of the size of the sector. The orbit decomposition avoids
+that matrix entirely. In floating point the eigenvalue test needs a threshold;
+eigenvalues of $\Pi_\alpha$ are $0$ or $1$, so a cut at $1/2$ is safe.
+
+\subsection{The block}
+
+With $V$ the orthonormal basis of the $\alpha$-isotypic component, the block is
+\begin{equation}
+  H_{\mathbf{n},\alpha} = V^{\dagger}H_{\mathbf{n}}V .
+  \label{eq:block}
+\end{equation}
+Since $[H,U(R)] = 0$ and $\Pi_\alpha$ is a projector onto an invariant subspace,
+$H_{\mathbf{n},\alpha}$ is the restriction of $H$ to that subspace, and the
+eigenvalues of $H$ are the union over $(\mathbf{n},\alpha)$ of the eigenvalues of
+the blocks. Completeness can be checked without diagonalizing anything:
+$\sum_\alpha \dim H_{\mathbf{n},\alpha} = M_{\mathbf{n}}$ for every momentum and
+$\sum_{\mathbf{n}} M_{\mathbf{n}} = \dim\Hil$.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+$\mathbf{n}$ & $|\Gk|$ & \multicolumn{4}{c}{$\dim H_{\mathbf{n},\alpha}$} & $M_{\mathbf{n}}$ \\
+ & & $A_1$ & $A_2$ & $B_1,\,B_2$ & $E$ & \\
+\midrule
+$(0,0)$ & 8 & 26 & 2 & 10, 10 & 16 & 64 \\
+$(0,1)$ & 2 & 38 & 18 & --- & --- & 56 \\
+$(1,0)$ & 2 & 38 & 18 & --- & --- & 56 \\
+$(1,1)$ & 2 & 38 & 18 & --- & --- & 56 \\
+\multicolumn{7}{c}{\footnotesize the remaining five momenta give $56$ each, with the same split}\\
+\midrule
+\multicolumn{6}{r}{total} & 512 \\
+\bottomrule
+\end{tabular}
+\caption{Sector dimensions for the $3\times3$ square lattice with $D_4$, full
+Hilbert space. At the zone centre the little group is all of $D_4$ and its five
+irreducible representations appear; at a generic momentum it is the order-two
+group generated by one mirror, with two one-dimensional representations. The
+$E$ block at $\Gamma$ has dimension $16 = 8\times2$: the isotypic component of a
+two-dimensional irrep is a multiple of its dimension.}
+\label{tab:sectors}
+\end{table}
+
+\section{The spin flip}\label{sec:spin}
+
+For a spin model there is one further symmetry that has nothing to do with the
+lattice. The spin flip sends every local state to its mirror image,
+\begin{equation}
+  \mathcal{F}\ket{\sigma_1\dots\sigma_L} = \ket{\bar\sigma_1\dots\bar\sigma_L},
+  \qquad \bar\sigma = d_{\mathrm{loc}}-1-\sigma ,
+  \label{eq:flip}
+\end{equation}
+and it commutes with every space-group element, since it acts on the local state
+at each site and the space group only permutes sites. Hence
+$G = \Glatt\times\mathbb{Z}_2$, and the irreducible representations are the
+products $(\mathbf{n},\alpha)\otimes s$ with $s = \pm1$ the parity.
+
+The charge is not preserved by $\mathcal{F}$: it replaces every local charge by
+$\bar q(\sigma) = q(d_{\mathrm{loc}}-1-\sigma)$, so a state of charge $Q$ is sent
+to one of charge
+\begin{equation}
+  Q' = \sum_j \bar q(\sigma_j) .
+\end{equation}
+For a spin model, where $q(\sigma) = \sigma$ and hence
+$\bar q(\sigma) = d_{\mathrm{loc}}-1-\sigma$, this is
+$Q' = L(d_{\mathrm{loc}}-1) - Q$. The spin flip is a symmetry of a fixed charge
+sector only when that sector is mapped onto itself, $Q' = Q$; for the spin model
+this reads
+\begin{equation}
+  2Q = L(d_{\mathrm{loc}}-1).
+  \label{eq:selfconj}
+\end{equation}
+and outside that case asking for it is an error rather than a symmetry. (In the
+full space it is a symmetry, and it relates the sectors $Q$ and $Q'$.)
+
+Inside a sector, $\mathcal{F}$ is a permutation of the computational basis
+without phases, so it acts on the adapted basis as a phased permutation like any
+other element, and its square is the identity. The parity projector is
+\begin{equation}
+  \Pi_{s} = \tfrac12\bigl(\mathbb{1} + s\,\mathcal{F}\bigr),
+\end{equation}
+and it acts inside each $(\mathbf{n},\alpha)$ block, because $\mathcal{F}$
+commutes with $H$ and with every $U(R)$. Equivalently one uses the character
+$\chi_{\mathbf{n},\alpha}(\cdot)\chi_s(\cdot)$ of the product group and projects
+once in the enlarged group; the two give the same blocks. Whether a given block
+splits at all is decided by the spectrum: levels with $s = +1$ and $s=-1$ that
+coincide are not resolved by the parity, they are degenerate.
+
+\section{The algorithm and its cost}\label{sec:algorithm}
+
+The construction of the preceding sections is summarized below. The data
+structures matter for the cost and are named.
 
 \begin{enumerate}
-    \item \textbf{Momentum projection (translation only):} For each $\mathbf{k} \in \mathrm{BZ}$, construct the momentum sector
-    \begin{align}
-        \mathscr{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathscr{H},
-        \qquad
-        \Pi_{\mathbf{k}} = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in G_{\mathrm{tr}}} e^{-i\mathbf{k}\cdot\mathbf{t}} \; \mathbf{t}.
-    \end{align}
-    Since $\Pi_{\mathbf{k}}$ only involves $|G_{\mathrm{tr}}|$ terms (translations), this step is cheap — it is a discrete Fourier transform on the lattice.
+\item \textbf{Basis.} Enumerate the computational basis of the charge sector by a
+depth-first walk over the sites that prunes on the remaining charge, and store
+each state as a packed integer with one field per site. Keep the map from a state
+to its index: a hash table, or a direct table when the code space is small enough.
+The cost is the dimension of the sector, up to a factor $d_{\mathrm{loc}}$.
 
-    \item \textbf{Little group projection (point group, within each \texorpdfstring{$\mathbf{k}$}{k}-sector):} Within $\mathscr{H}_{\mathbf{k}}$, the little group $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$ still acts as a symmetry (since $\mathbf{k}$ is invariant under $G_{\mathbf{k}}$). We further decompose $\mathscr{H}_{\mathbf{k}}$ using the irreps $\alpha$ of $G_{\mathbf{k}}$:
-    \begin{align}
-        \mathscr{H}_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \, \mathscr{H}_{\mathbf{k}},
-        \qquad
-        \Pi_{\alpha}^{G_{\mathbf{k}}} = \frac{d_{\alpha}}{|G_{\mathbf{k}}|} \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \; r.
-    \end{align}
-    This step only involves $|G_{\mathbf{k}}| \le |G_{\mathrm{pt}}|$ terms, which is significantly cheaper than projecting with the full induced character.
+\item \textbf{Actions.} For every element of the group store the site permutation
+and, per site, the local permutation and phase of \eqref{eq:action}. Applying an
+element to a state is then a loop over the sites, with no search.
+
+\item \textbf{Hamiltonian.} Assemble $H$ in the computational basis from the terms
+\eqref{eq:hamiltonian}: for each state, apply each term and accumulate the image
+and its coefficient, then sort and merge equal images. The cost is proportional
+to the number of nonzeros of $H$: at most the dimension, times the number of
+terms, times the largest number of images one term produces, and in practice far
+less than that.
+
+\item \textbf{Symmetrisation} (optional, and unnecessary when the couplings
+already respect the group). If the Hamiltonian is given as a single generating
+term, or as a set of terms that is not closed under the group, replace it by
+\begin{equation}
+  H \mapsto \frac{1}{|\Glatt|}\sum_{g\in\Glatt} U(g)\,H\,U(g)^{-1}.
+  \label{eq:sym}
+\end{equation}
+This is the projector onto the operators that commute with the group. On an
+invariant input it is the identity, so it may be applied without changing the
+model; on a non-invariant one it silently replaces the model by its average. One
+sparse comparison with the input separates the two cases, and it is worth making,
+because the second one is otherwise invisible. Note that the prefactor is $1/|\Glatt|$, not a normalization chosen to
+suit the model: symmetrising a single term and then forgetting the factor scales
+the Hamiltonian, and every energy with it.
+
+\item \textbf{Momentum sectors.} For every $\mathbf{n}$, walk the translation
+orbits once: for each representative apply the translations, accumulate the
+column \eqref{eq:adapt} with its phases, normalize, and discard it if the norm
+\eqref{eq:norm} vanishes. Per momentum the cost is $|\Gtr|$ state actions per
+orbit, that is $|\Gtr|$ times the dimension of the charge sector, so $|\Gtr|^{2}$
+times the dimension over the whole Brillouin zone.
+
+\item \textbf{Sector Hamiltonians.} Form $H_{\mathbf{n}} =
+B_{\mathbf{n}}^{\dagger}HB_{\mathbf{n}}$ as a sparse product, column by column;
+never form the dense $B_{\mathbf{n}}$. The work is the number of nonzeros of the
+intermediate $HB_{\mathbf{n}}$, that is the length of a column of
+$B_{\mathbf{n}}$ times the number of rows it reaches, summed over the columns;
+in practice the columns are short and this step is far cheaper than the
+assembly of $H$ itself.
+
+\item \textbf{Little group and phases.} For each momentum, select the operations
+that satisfy \eqref{eq:little} and compute their phased permutation
+\eqref{eq:phased} on the sector columns. If an operation in the little group
+sends a column outside the sector, the construction has a defect and this is
+where it shows: the code raises rather than continuing.
+
+\item \textbf{Blocks.} Group the columns into orbits of $\Gk$, diagonalize the
+projector \eqref{eq:Pi} orbit by orbit, keep the eigenvectors with unit
+eigenvalue, and form $V^{\dagger}H_{\mathbf{n}}V$.
+
+\item \textbf{Diagonalize.} With the blocks in hand, use a dense solver for the
+small ones and an iterative one for the large ones. The two are not
+interchangeable: a single-vector Lanczos recursion resolves distinct levels only,
+so a degenerate multiplet contributes one Ritz value and not one per copy, and an
+unconverged Ritz value is a number between two levels and not an eigenvalue of
+anything. Either compare against distinct levels or read multiplicities from the
+character of $H$ itself, and check residuals before accepting a Ritz value.
 \end{enumerate}
 
-The combined projector is
-\begin{align}
-    \Pi_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \circ \Pi_{\mathbf{k}}.
-\end{align}
-This two-step procedure is mathematically equivalent to the one-step projection with the full induced character $\chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}$, but it factorizes the computation into an $\mathcal{O}(|G_{\mathrm{tr}}|)$ step followed by an $\mathcal{O}(|G_{\mathbf{k}}|)$ step, rather than a single $\mathcal{O}(|G_{\mathrm{tr}}| \cdot |G_{\mathrm{pt}}|)$ step.
+The cost of the symmetry machinery is dominated by step~5, which is
+$|\Gtr|$ state actions per orbit, and by step~7, whose largest matrix has the
+size of the little group. Neither grows with the block dimension. What grows is
+step~9: the eigensolver is the only part of the procedure that scales as the cube
+of the block, and it dominates for any lattice on which the method is worth
+using.
 
-\subsection{Full symmetry group \texorpdfstring{$G = G_{\mathrm{latt}} \times \mathbb{Z}_2$}{G}}
+\section{Numerical checks}\label{sec:checks}
 
-The internal spin-flip symmetry $\mathbb{Z}_2 = \{e, \mathcal{F}\}$ is a direct product with the lattice group and can be treated independently. The full symmetry group is
-\begin{align}
-    G = G_{\mathrm{latt}} \times \mathbb{Z}_2.
-\end{align}
+The construction was checked against direct diagonalization; a sector
+decomposition that is wrong in any of the ways listed in
+Section~\ref{sec:pitfalls} fails at least one of the following.
 
-\paragraph{Action on Hilbert space.}
-The spin-flip operator acts on each site independently:
-\begin{align}
-    \mathcal{F} \ket{\sigma_1 \dots \sigma_L} = \ket{(d-1-\sigma_1), \dots, (d-1-\sigma_L)}.
-\end{align}
-An element of $G$ is a triple $(\mathbf{t}, r, f)$ with $f \in \{0, 1\}$, and it acts as
-\begin{align}
-    (\mathbf{t}, r, f) \ket{\sigma_1 \dots \sigma_L} = \mathcal{F}^f \circ (\mathbf{t}, r) \ket{\sigma_1 \dots \sigma_L}.
-\end{align}
+\paragraph{Completeness.} $\sum_{\mathbf{n},\alpha}\dim H_{\mathbf{n},\alpha}$
+equals the dimension of the Hilbert space, and $\sum_{\mathbf{n}}M_{\mathbf{n}}$
+equals it too. This catches a wrong little group immediately, since a group that
+is too large produces projections onto non-invariant subspaces.
 
-\paragraph{Irreducible representations.}
-Since $\mathbb{Z}_2$ forms a direct product with $G_{\mathrm{latt}}$, its irreps factorize. Let $s = \pm 1$ label the two irreps of $\mathbb{Z}_2$ (even/odd under spin flip). The character of an irrep $(\mathbf{k}, \alpha, s)$ of $G$ is
-\begin{align}
-    \chi_{\mathbf{k}, \alpha, s}^{G}(\mathbf{t}, r, f)
-    = \chi_{\mathbf{k}, \alpha}^{G_{\mathrm{latt}}}(\mathbf{t}, r) \; \cdot \;
-    \chi_{s}^{\mathbb{Z}_2}(f),
-\end{align}
-where $\chi_{s}^{\mathbb{Z}_2}(0) = 1$ and $\chi_{s}^{\mathbb{Z}_2}(1) = s$.
+\paragraph{Spectra.} The union of the block spectra equals the spectrum of $H$
+obtained by diagonalizing it directly, level by level:
+\begin{equation}
+  \max\bigl|\,\operatorname{spec}(H)_{\text{blocks}} -
+  \operatorname{spec}(H)_{\text{direct}}\,\bigr| \lesssim 10^{-13}
+\end{equation}
+for the $3\times3$ models with $D_4$ and with $D_6$, in the full Hilbert space.
+For the four-by-four square lattice at half filling ($12\,870$ states, $D_4$) the
+ground-state energy obtained from the blocks,
+$E_0 = -44.9139328337$ in units where the Heisenberg coupling is written with
+Pauli matrices, agrees with a Lanczos diagonalization of the same Hamiltonian to
+all ten printed digits.
 
-\paragraph{Three-step decomposition.}
-With the decoupled approach, the full decomposition proceeds as:
-\begin{enumerate}
-    \item \textbf{Momentum projection:} $\mathscr{H}_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathscr{H}$ (using $G_{\mathrm{tr}}$ only)
-    \item \textbf{Little group projection:} $\mathscr{H}_{\mathbf{k}, \alpha} = \Pi_{\alpha}^{G_{\mathbf{k}}} \mathscr{H}_{\mathbf{k}}$ (using $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$)
-    \item \textbf{Spin-flip projection:} $\mathscr{H}_{\mathbf{k}, \alpha, s} = \Pi_{s}^{\mathbb{Z}_2} \mathscr{H}_{\mathbf{k}, \alpha}$ (using $\mathbb{Z}_2$)
-\end{enumerate}
-Each step is independent and computationally cheaper than a single projection with the full group $G$.
+\paragraph{Labels.} Each adapted vector carries a momentum, an irrep label and a
+parity; applying the corresponding operators to it returns the same vector with
+the expected phase, to $10^{-15}$. This is the check that catches a missing Bloch
+phase, and the check that the spin-flip parity is resolved rather than merely
+computed.
 
-\section{Projectors and Adapted Basis}
+\paragraph{Group law and character tables.} The site maps compose as the group
+does,
+\begin{equation}
+  U(g)U(h) = U(gh),
+\end{equation}
+and the character tables of all little groups that occur are orthonormal and
+satisfy $\sum_\alpha d_\alpha^2 = |\Gk|$. For a generic finite group, whose
+multiplication table is what one actually knows, the irreducible characters are
+computed from the class algebra: the matrices
+$(N_\mu)_{\nu\lambda} = a^{\lambda}_{\mu\nu}$ of structure constants commute and
+are diagonalized by a common basis, whose eigenvalues are the central characters
+$\omega_\rho(\mu)$; then
+\begin{equation}
+  d_\rho^2 = \frac{|G|}{\sum_\mu |\omega_\rho(\mu)|^2/|C_\mu|},
+  \qquad
+  \chi_\rho(\mu) = \frac{d_\rho\,\omega_\rho(\mu)}{|C_\mu|}.
+  \label{eq:chars}
+\end{equation}
 
-With the decoupled formulation, we construct the adapted basis in three stages.
+\begin{table}[t]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+model & $|\Glatt|$ & states & sectors & largest block & time \\
+\midrule
+$3\times3$ square, $D_4$, full space & 72 & 512 & 21 & 38 & 11\,ms \\
+$3\times3$ triangular, $D_6$, full space & 108 & 512 & 23 & 38 & 23\,ms \\
+$4\times4$ square, $D_4$, half filling & 128 & 12\,870 & 42 & 436 & 6.9\,s \\
+\bottomrule
+\end{tabular}
+\caption{Sizes for three Heisenberg models. The time is the whole pipeline of
+Section~\ref{sec:algorithm} through the diagonalization of every block, on one
+core. For the $4\times4$ model $6.0$ of the $6.9$ seconds are spent inside the
+dense eigensolver; the symmetry machinery, including the assembly of the
+Hamiltonian, accounts for the remaining $0.9$ seconds.}
+\label{tab:sizes}
+\end{table}
 
-\subsection{Momentum-adapted basis}
-Let $\ket{x}$ be a computational basis state (a representative of a translation orbit). The momentum-adapted basis states are
-\begin{align}
-    \ket{\mathbf{k}; x} = \frac{1}{N_{\mathbf{k}}^x} \Pi_{\mathbf{k}} \ket{x}
-    = \frac{1}{N_{\mathbf{k}}^x} \frac{1}{|G_{\mathrm{tr}}|}
-      \sum_{\mathbf{t} \in G_{\mathrm{tr}}} e^{-i\mathbf{k}\cdot\mathbf{t}} \; \mathbf{t}\ket{x},
-\end{align}
-where the normalization factor is
-\begin{align}
-    (N_{\mathbf{k}}^x)^2 = \mel{x}{\Pi_{\mathbf{k}}}{x}
-    = \frac{1}{|G_{\mathrm{tr}}|} \sum_{\mathbf{t} \in \mathrm{Stab}_{G_{\mathrm{tr}}}(\ket{x})} e^{-i\mathbf{k}\cdot\mathbf{t}}.
-\end{align}
-Here, $\mathrm{Stab}_{G_{\mathrm{tr}}}(\ket{x}) = \{ \mathbf{t} \in G_{\mathrm{tr}} \mid \mathbf{t}\ket{x} = \ket{x} \}$ is the translation stabilizer of $\ket{x}$.
+\section{What goes wrong}\label{sec:pitfalls}
 
-\subsection{Little-group-adapted basis}
-Within a fixed momentum sector $\mathbf{k}$, we further adapt the basis to the little group $G_{\mathbf{k}}$. Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with dimension $d_{\alpha}$ and character $\chi_{\alpha}$. The fully lattice-adapted basis state is
-\begin{align}
-    \ket{\mathbf{k}, \alpha; x}
-    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \Pi_{\alpha}^{G_{\mathbf{k}}} \ket{\mathbf{k}; x}
-    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
-      \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \; r \ket{\mathbf{k}; x},
-\end{align}
-with normalization
-\begin{align}
-    (N_{\mathbf{k}, \alpha}^x)^2
-    = \mel{\mathbf{k}; x}{\Pi_{\alpha}^{G_{\mathbf{k}}}}{\mathbf{k}; x}
-    = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
-      \sum_{r \in \mathrm{Stab}_{G_{\mathbf{k}}}(\ket{\mathbf{k}; x})} \chi_{\alpha}^*(r),
-\end{align}
-where $\mathrm{Stab}_{G_{\mathbf{k}}}(\ket{\mathbf{k}; x}) = \{ r \in G_{\mathbf{k}} \mid r\ket{\mathbf{k}; x} = \ket{\mathbf{k}; x} \}$.
-
-\subsection{Spin-flip adaptation}
-Finally, for the full group $G$, we project onto the spin-flip parity sector $s = \pm 1$:
-\begin{align}
-    \ket{\mathbf{k}, \alpha, s; x}
-    = \frac{1}{N_s^x} \Pi_{s}^{\mathbb{Z}_2} \ket{\mathbf{k}, \alpha; x}
-    = \frac{1}{N_s^x} \frac{1}{2}
-      \left( \mathbb{1} + s \mathcal{F} \right) \ket{\mathbf{k}, \alpha; x},
-\end{align}
-with normalization
-\begin{align}
-    (N_s^x)^2 = \frac{1}{2} \left( 1 + s \mel{\mathbf{k}, \alpha; x}{\mathcal{F}}{\mathbf{k}, \alpha; x} \right).
-\end{align}
-
-\section{Hamiltonian in Adapted Basis}
-
-The Hamiltonian is symmetrized over the full symmetry group:
-\begin{align}
-    \mathcal{H} = \frac{1}{N} \sum_{h \in G} h \mathcal{H}_{\mathrm{loc}} h^{-1},
-\end{align}
-where $N$ is the number of elements in $G$ that stabilize $\mathcal{H}_{\mathrm{loc}}$ under conjugation.
-Since $[\mathcal{H}, g] = 0$ for all $g \in G$, the Hamiltonian is block-diagonal in the adapted basis.
-We compute the matrix elements in two stages, mirroring the two-step basis construction.
-
-\subsection{Step 1: Hamiltonian in the momentum-adapted basis}
-
-Let $\ket{\mathbf{k}; x} = \frac{1}{N_{\mathbf{k}}^x} \Pi_{\mathbf{k}} \ket{x}$ be the momentum-adapted basis state.
-Since $\Pi_{\mathbf{k}}$ is a projector that commutes with $\mathcal{H}$, we have
-$\mathcal{H} \Pi_{\mathbf{k}} = \Pi_{\mathbf{k}} \mathcal{H}$, and therefore
-\begin{align}
-    \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}
-    &= \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
-       \mel{x}{\Pi_{\mathbf{k}} \mathcal{H} \Pi_{\mathbf{k}}}{x'}
-     = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
-       \mel{x}{\mathcal{H} \Pi_{\mathbf{k}}}{x'} \\
-    &= \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
-       \frac{1}{|G_{\mathrm{tr}}|}
-       \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
-       e^{-i\mathbf{k} \cdot \mathbf{t}}
-       \mel{x}{\mathcal{H} \cdot \mathbf{t}}{x'}.
-\end{align}
-Only a single sum over $G_{\mathrm{tr}}$ appears — the translation symmetry has been absorbed into the Bloch phase.
-Expanding the symmetrized Hamiltonian,
-\begin{align}
-    \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}
-    = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
-      \frac{1}{|G_{\mathrm{tr}}| N}
-      \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
-      \sum_{h \in G}
-      e^{-i\mathbf{k} \cdot \mathbf{t}}
-      \mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} \mathbf{t}}{x'}.
-\end{align}
-The inner matrix element $\mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} \mathbf{t}}{x'}$ is computed by:
-\begin{enumerate}
-    \item Apply the translation $\mathbf{t}$ to $\ket{x'}$ (permute the sites).
-    \item Apply $h^{-1}$ to the result, then $\mathcal{H}_{\mathrm{loc}}$, then $h$.
-    \item Take the overlap with $\bra{x}$.
-\end{enumerate}
-In practice, the sum over $h \in G$ can be reduced: only those $h$ for which
-$h^{-1} \mathbf{t} \ket{x'}$ has non-zero overlap with the support of $\mathcal{H}_{\mathrm{loc}}$
-contribute. For a local (few-site) $\mathcal{H}_{\mathrm{loc}}$, this is a small subset of $G$.
-
-For each momentum $\mathbf{k}$, this yields a matrix $H_{\mathbf{k}}$ of size
-$M_{\mathbf{k}} \times M_{\mathbf{k}}$, where $M_{\mathbf{k}}$ is the number of
-translation-orbit representatives that survive the momentum projection (i.e.\ those
-with $N_{\mathbf{k}}^x \neq 0$).
-
-\subsection{Step 2: Little-group reduction within each \texorpdfstring{$\mathbf{k}$}{k}-sector}
-
-Within a fixed momentum sector $\mathbf{k}$, the little group $G_{\mathbf{k}} \subset G_{\mathrm{pt}}$
-still acts as a symmetry. The momentum-adapted states $\{\ket{\mathbf{k}; x}\}$ carry a
-representation of $G_{\mathbf{k}}$: each $r \in G_{\mathbf{k}}$ permutes these states.
-We can therefore further block-diagonalize $H_{\mathbf{k}}$ using the irreps of $G_{\mathbf{k}}$.
-
-Let $\alpha$ label an irrep of $G_{\mathbf{k}}$ with dimension $d_{\alpha}$ and character
-$\chi_{\alpha}$. The fully adapted basis state is
-\begin{align}
-    \ket{\mathbf{k}, \alpha; x}
-    = \frac{1}{N_{\mathbf{k}, \alpha}^x} \Pi_{\alpha}^{G_{\mathbf{k}}} \ket{\mathbf{k}; x},
-    \qquad
-    \Pi_{\alpha}^{G_{\mathbf{k}}} = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
-    \sum_{r \in G_{\mathbf{k}}} \chi_{\alpha}^*(r) \, r.
-\end{align}
-The Hamiltonian matrix element in this basis is
-\begin{align}
-    \mel{\mathbf{k}, \alpha; x}{\mathcal{H}}{\mathbf{k}, \alpha; x'}
-    &= \frac{1}{N_{\mathbf{k}, \alpha}^x N_{\mathbf{k}, \alpha}^{x'}}
-       \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
-       \sum_{r \in G_{\mathbf{k}}}
-       \chi_{\alpha}^*(r)
-       \mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}.
-\end{align}
-The quantity $\mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}$ is a matrix element of
-$\mathcal{H}$ between two momentum-adapted states, with an additional point-group rotation
-$r$ applied to the right state. It is computed by the same formula as Step~1, with
-$\ket{x'}$ replaced by $r \ket{x'}$:
-\begin{align}
-    \mel{\mathbf{k}; x}{\mathcal{H} \cdot r}{\mathbf{k}; x'}
-    = \frac{1}{N_{\mathbf{k}}^x N_{\mathbf{k}}^{x'}}
-      \frac{1}{|G_{\mathrm{tr}}| N}
-      \sum_{\mathbf{t} \in G_{\mathrm{tr}}}
-      \sum_{h \in G}
-      e^{-i\mathbf{k} \cdot \mathbf{t}}
-      \mel{x}{h \mathcal{H}_{\mathrm{loc}} h^{-1} (\mathbf{t} \circ r)}{x'}.
-\end{align}
-
-\subsection{Summary of the two-step algorithm}
+The construction has several failure modes that are silent, in the sense that
+the program runs and produces numbers. They are collected here because each of
+them was, at some point, observed in the implementation.
 
 \begin{enumerate}
-    \item \textbf{Choose representatives:} For each translation-orbit of computational basis
-    states, pick the canonical representative $\ket{x}$ (smallest integer value).
-    \item \textbf{Momentum projection (Step~1):} For each $\mathbf{k} \in \mathrm{BZ}$ and each pair
-    of representatives $(x, x')$, compute the momentum-projected matrix element
-    $H_{\mathbf{k}}(x, x') = \mel{\mathbf{k}; x}{\mathcal{H}}{\mathbf{k}; x'}$.
-    This yields a sparse matrix of size $M_{\mathbf{k}} \times M_{\mathbf{k}}$, where
-    $M_{\mathbf{k}}$ is the number of representatives with $N_{\mathbf{k}}^x \neq 0$.
-    \item \textbf{Little-group reduction (Step~2):} For each $\mathbf{k}$ and each irrep $\alpha$ of
-    $G_{\mathbf{k}}$, compute the fully adapted matrix:
-    \begin{align}
-        H_{\mathbf{k}, \alpha}(x, x')
-        = \frac{d_{\alpha}}{|G_{\mathbf{k}}|}
-          \sum_{r \in G_{\mathbf{k}}}
-          \chi_{\alpha}^*(r) \;
-          H_{\mathbf{k}}\bigl(x,\, r \cdot x'\bigr).
-    \end{align}
-    Here $r \cdot x'$ denotes the index of the representative of the orbit containing
-    $r \ket{\mathbf{k}; x'}$ (if $r$ maps to a different representative, the matrix element
-    picks up the appropriate phase and normalization factors from the basis change).
-    \item \textbf{Spin-flip (Step~3, optional):} If spin-flip symmetry is present, further
-    resolve each $H_{\mathbf{k}, \alpha}$ into even/odd parity blocks using
-    $\Pi_s^{\mathbb{Z}_2} = \frac{1}{2}(\mathbb{1} + s \mathcal{F})$.
+\item \emph{A little group that is the whole point group.} The criterion
+\eqref{eq:little} must be evaluated modulo $N_i$ on the integer label. Testing
+instead that $R\mathbf{k}$ equals $\mathbf{k}$ up to a reciprocal lattice vector
+accepts everything, because on a finite torus all allowed momenta lie in the same
+coset. The symptom is a decomposition with far too few sectors and labels that do
+not reproduce under the operators.
+
+\item \emph{A missing Bloch phase.} Inside a sector the operations act by phased
+permutations \eqref{eq:phased}. Replacing the phases by one makes the blocks
+Hermitian and plausible, and shifts the spectrum by an amount of order the
+bandwidth, $1.8$ on the $3\times3$ square lattice with $D_4$.
+
+\item \emph{A model that the group does not actually leave invariant.} The
+symmetrisation \eqref{eq:sym} repairs an asymmetric input by averaging it, which
+makes the output invariant but changes the model. A bond list that looks
+periodic may not be: an ordering guard such as ``keep the bond if the first site
+has the smaller index'' drops exactly the bonds that close the torus, and the raw
+Hamiltonian is then neither translation nor point-group invariant. Symmetrising
+it produces the average of an open lattice, which is a different model.
+Comparing \eqref{eq:sym} with its input costs one sparse subtraction and detects
+this at once.
+
+\item \emph{A non-monomial local action.} If the local representation is not
+monomial in the chosen basis, the image of a basis state is a superposition and
+the adapted basis is not what the construction assumes. The cure is a change of
+local basis, not a change of algorithm.
+
+\item \emph{A forced spin flip.} The spin flip is a symmetry of a charge sector
+only under \eqref{eq:selfconj}. Applying it outside that case produces blocks
+that are not the restriction of $H$ to anything.
+
+\item \emph{Lanczos without a residual test.} See step~9 above. An unconverged
+Ritz value is not an eigenvalue, and a converged recursion still reports one
+vector per distinct level, not one per copy.
 \end{enumerate}
 
-\paragraph{Computational cost.}
-Step~1 costs $\mathcal{O}(M_{\mathbf{k}}^2 \cdot |G_{\mathrm{tr}}|)$ per momentum sector (with a
-constant factor proportional to the number of local terms in $\mathcal{H}_{\mathrm{loc}}$).
-Step~2 costs $\mathcal{O}(M_{\mathbf{k}}^2 \cdot |G_{\mathbf{k}}|)$ per irrep, where
-$|G_{\mathbf{k}}| \le |G_{\mathrm{pt}}|$. The total cost per $(\mathbf{k}, \alpha)$ sector is
-$\mathcal{O}\bigl(M_{\mathbf{k}}^2 \cdot (|G_{\mathrm{tr}}| + |G_{\mathbf{k}}|)\bigr)$.
+\section{Concluding remarks}
 
+The decomposition described here is the standard treatment of space-group
+symmetry in a crystalline solid, applied to a finite torus and to the compressed
+basis that a computer uses. Two features are worth keeping in view when adapting
+it. The first is that the two-step structure is not an approximation: translations
+give an abelian normal subgroup, whose one-dimensional representations are
+labelled by an integer vector, and the little group is what remains of the point
+group at that label; the induced representations are the bookkeeping that
+restores the whole star. The second is that the cost of the symmetry machinery is
+independent of the size of the blocks: it is set by the number of states, the
+number of translations, and the order of the little group. Once the decomposition
+is correct, the remaining bottleneck is the diagonalization itself, and that is
+the point at which one should reach for iterative methods, distributed memory, or
+a matrix-free formulation of the block.
 
-\bibliography{bib.bib}
 \bibliographystyle{plain}
+\bibliography{bib}
 
 \end{document}
