@@ -15,7 +15,6 @@ build from the arrays it is given.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -216,34 +215,23 @@ def vectors_to_scipy(vectors, columns: int) -> sp.csc_matrix:
 
 # ── the sector decomposition ──────────────────────────────────────────────────
 
-#: How many momentum sectors are worked on at once; None means one per core,
-#: limited by the scratch each of them needs.  The kernel releases the
-#: interpreter lock around the calls that walk the Hilbert space, so these are
-#: real threads.
+#: How many workers the kernel may use inside one sector; None means one per core,
+#: and the kernels clamp that to the work they have.
 workers: Optional[int] = None
 
-#: Scratch the threads together may spend, in bytes.  One thread holds about
-#: 24 bytes per state while it builds a sector, so a five-by-five lattice with
-#: its five million states caps the count instead of letting it follow the cores.
-memory_budget = 1 << 30
 
-
-def _thread_count(tasks: int, states: int) -> int:
+def _threads(threads: Optional[int] = None) -> int:
     '''
-    How many threads to use for *tasks* independent pieces of work.
+    The thread count to hand the kernel.
 
     Args:
-        tasks: number of pieces.
-        states: size of the computational basis, for the scratch estimate.
+        threads: an explicit count, or None to use the module setting.
     Returns:
-        The number of workers: at least one, never more than the number of
-        pieces, and -- unless *workers* is set -- never more than both the cores
-        and the memory budget allow.
+        The count, where 0 means one per hardware thread.
     '''
-    if workers is not None:
-        return max(1, min(int(workers), tasks))
-    affordable = max(1, int(memory_budget) // (24 * max(1, states)))
-    return max(1, min(os.cpu_count() or 1, affordable, tasks))
+    if threads is not None:
+        return int(threads)
+    return 0 if workers is None else int(workers)
 
 
 def _identity_permutation(count: int) -> '_edkern.PhasedPermutation':
@@ -297,7 +285,7 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     out = {}
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
+        columns = _edkern.momentum_basis(basis, translations, characters, threads)
         columns_count = columns.columns()
         if columns_count == 0:
             continue
@@ -322,10 +310,11 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
                     use_actions = list(actions) + [_compose(action, flip, columns_count)
                                                    for action in actions]
                     use_chars = list(chars) + [value * s for value in chars]
-                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim, columns_count)
+                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim,
+                                                columns_count, threads)
                 if vectors.vectors() == 0:
                     continue
-                block = _edkern.block_matrix(sector, vectors)
+                block = _edkern.block_matrix(sector, vectors, threads)
                 asked = min(count, vectors.vectors())
                 out[(k, alpha, s)] = np.asarray(
                     _edkern.lowest_eigenvalues(block, asked))
@@ -357,7 +346,7 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
         '''Every sector that belongs to one momentum label.'''
         part = {}
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
+        columns = _edkern.momentum_basis(basis, translations, characters, _threads())
         count = columns.columns()
         if count == 0:
             return part
@@ -387,22 +376,14 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
                     use_actions = list(actions) + [_compose(action, flip, count)
                                                    for action in actions]
                     use_chars = list(chars) + [value * s for value in chars]
-                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim, count)
+                vectors = _edkern.isotypic_basis(use_actions, use_chars, dim, count, _threads())
                 if vectors.vectors() == 0:
                     continue
-                block = to_scipy(_edkern.block_matrix(sector, vectors))
+                block = to_scipy(_edkern.block_matrix(sector, vectors, _threads()))
                 adapted = columns_to_scipy(columns, basis.size()) @ vectors_to_scipy(vectors, count)
                 part[(k, alpha, s)] = (adapted.tocsr(), block.tocsr())
         return part
 
-    # the momentum sectors are independent, and the kernel releases the
-    # interpreter lock while it walks the Hilbert space, so the loop is spread
-    # over threads instead of the whole decomposition being one thread
-    momenta = model.tr_group.all_momenta()
-    threads = _thread_count(len(momenta), basis.size())
-    if threads == 1:
-        parts = [one(k) for k in momenta]
-    else:
-        with ThreadPoolExecutor(max_workers=threads) as pool:
-            parts = list(pool.map(one, momenta))
-    return {key: value for part in parts for key, value in part.items()}
+    # one momentum at a time: the parallelism is inside a sector, so the peak here
+    # does not grow with the number of sectors
+    return {key: value for k in model.tr_group.all_momenta() for key, value in one(k).items()}

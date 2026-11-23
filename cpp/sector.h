@@ -73,7 +73,7 @@ struct SectorVectors {
  */
 SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,
-                             int dim, int column_count);
+                             int dim, int column_count, int threads = 0);
 
 /**
  * @param column_count number of columns of the sector.
@@ -103,6 +103,7 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
 /**
  * @param matrix the Hamiltonian of a sector, in the sector basis.
  * @param vectors an orthonormal set of sector vectors.
+ * @param threads how many workers to use; 0 means one per hardware thread.
  * @detail ``V^T H V`` as a sparse matrix: both factors are sparse, the product
  *         is accumulated column by column, and every vector of *vectors* lives
  *         on one little-group orbit, so the block is as sparse as the sector
@@ -111,6 +112,7 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
  * @short The Hamiltonian block in the adapted basis, sparse.
  * @return A CSR matrix of side ``vectors.vectors()``.
  */
-SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors);
+SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors,
+                          int threads = 0);
 
 }  // namespace ed

@@ -1,5 +1,7 @@
 #include "hilbert.h"
 
+#include "parallel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -140,47 +142,67 @@ std::pair<std::uint64_t, Complex> apply(const Basis& basis, const MonomialAction
 
 SparseColumns momentum_basis(const Basis& basis,
                              const std::vector<MonomialAction>& translations,
-                             const std::vector<Complex>& characters)
+                             const std::vector<Complex>& characters, int threads)
 {
     const int n = basis.size();
     const int groups = static_cast<int>(translations.size());
     if (static_cast<int>(characters.size()) != groups)
         throw std::invalid_argument("one character per translation is required");
 
-    SparseColumns out;
-    out.indptr.push_back(0);
-    std::vector<char> seen(n, 0);
-    std::vector<std::uint64_t> images(groups);
-    std::vector<Complex> weights(groups);
-
-    for (int start = 0; start < n; ++start) {
-        if (seen[start]) continue;
-        // walk the orbit, remember the smallest word as the representative
-        std::uint64_t rep = std::numeric_limits<std::uint64_t>::max();
+    // The orbits are found by one walk over the basis: every state is visited once
+    // and its orbit is marked, so the walk costs one application per state and the
+    // representative of a column is the smallest word the translations reach from
+    // it, which is what fixes the column's global phase.  The walk is serial
+    // because it is a scan; it is also only a twenty-fifth of the work, since the
+    // projection below runs once per orbit rather than once per state.
+    std::vector<char> seen(static_cast<std::size_t>(n), 0);
+    std::vector<std::uint64_t> representatives;
+    representatives.reserve(static_cast<std::size_t>(n) / std::max(1, groups) + 1);
+    for (int state = 0; state < n; ++state) {
+        if (seen[state]) continue;
+        std::uint64_t smallest = std::numeric_limits<std::uint64_t>::max();
         for (int g = 0; g < groups; ++g) {
-            images[g] = apply(basis, translations[g], basis.state(start)).first;
-            const int at = basis.index(images[g]);
+            const std::uint64_t image = apply(basis, translations[g], basis.state(state)).first;
+            const int at = basis.index(image);
             if (at < 0)
                 throw std::runtime_error("a translation left the basis; the sector is inconsistent");
             seen[at] = 1;
-            rep = std::min(rep, images[g]);
+            smallest = std::min(smallest, image);
         }
+        representatives.push_back(smallest);
+    }
 
-        // project from the representative, so the column phase is canonical
+    // the projection is one orbit at a time and the orbits are independent, so it
+    // is spread over the workers; the columns come out in the order of the
+    // representatives, which is the order the walk found them in
+    std::vector<std::vector<std::pair<int, Complex>>> produced(representatives.size());
+    parallel_ranges(static_cast<int>(representatives.size()), [&](int begin, int end) {
         std::map<std::uint64_t, Complex> accumulated;
-        for (int g = 0; g < groups; ++g) {
-            const auto image = apply(basis, translations[g], rep).first;
-            accumulated[image] += std::conj(characters[g]) / static_cast<double>(groups);
+        for (int index = begin; index < end; ++index) {
+            accumulated.clear();
+            for (int g = 0; g < groups; ++g) {
+                const auto image = apply(basis, translations[g], representatives[index]).first;
+                accumulated[image] += std::conj(characters[g]) / static_cast<double>(groups);
+            }
+            double norm2 = 0.0;
+            for (const auto& entry : accumulated) norm2 += std::norm(entry.second);
+            const double length = std::sqrt(norm2);
+            if (!(length > 1e-12)) continue;    // momentum incompatible with the stabiliser
+            std::vector<std::pair<int, Complex>>& column = produced[index];
+            column.reserve(accumulated.size());
+            for (const auto& entry : accumulated)
+                column.emplace_back(basis.index(entry.first), entry.second / length);
         }
-        double norm2 = 0.0;
-        for (const auto& entry : accumulated) norm2 += std::norm(entry.second);
-        const double norm = std::sqrt(norm2);
-        if (!(norm > 1e-12)) continue;      // momentum incompatible with the stabiliser
+    }, threads);
 
+    SparseColumns out;
+    out.indptr.push_back(0);
+    for (const auto& column : produced) {
+        if (column.empty()) continue;
         ++out.column_count;
-        for (const auto& entry : accumulated) {
-            out.indices.push_back(basis.index(entry.first));
-            out.data.push_back(entry.second / norm);
+        for (const auto& entry : column) {
+            out.indices.push_back(entry.first);
+            out.data.push_back(entry.second);
         }
         out.indptr.push_back(static_cast<int>(out.indices.size()));
     }

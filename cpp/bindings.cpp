@@ -45,7 +45,7 @@ PYBIND11_MODULE(_edkern, m)
 
     m.def("momentum_basis", &ed::momentum_basis,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"), py::arg("translations"),
-          py::arg("characters"), "Momentum-adapted orthonormal basis of one sector");
+          py::arg("characters"), py::arg("threads") = 0, "Momentum-adapted orthonormal basis of one sector");
 
     py::class_<ed::SparseMatrix>(m, "SparseMatrix")
         .def_readonly("rows", &ed::SparseMatrix::rows)
@@ -83,13 +83,14 @@ PYBIND11_MODULE(_edkern, m)
           "The sector basis itself, for a trivial little group");
     m.def("isotypic_basis", &ed::isotypic_basis,
           py::call_guard<py::gil_scoped_release>(), py::arg("actions"), py::arg("characters"),
-          py::arg("dim"), py::arg("column_count"), "Adapted basis of one irrep");
+          py::arg("dim"), py::arg("column_count"), py::arg("threads") = 0, "Adapted basis of one irrep");
     m.def("sector_hamiltonian", &ed::sector_hamiltonian,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("columns"), py::arg("threads") = 0,
           "The Hamiltonian in a momentum-adapted basis, term by term");
     m.def("block_matrix", &ed::block_matrix,
           py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
+          py::arg("threads") = 0,
           "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues",
           py::overload_cast<const ed::SparseMatrix&, int, int, double, int>(&ed::lowest_eigenvalues),

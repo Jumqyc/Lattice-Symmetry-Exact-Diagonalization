@@ -137,6 +137,6 @@ struct SparseColumns {
  */
 SparseColumns momentum_basis(const Basis& basis,
                              const std::vector<MonomialAction>& translations,
-                             const std::vector<Complex>& characters);
+                             const std::vector<Complex>& characters, int threads = 0);
 
 }  // namespace ed

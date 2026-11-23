@@ -86,78 +86,100 @@ PhasedPermutation sector_action(const SparseColumns& columns, const Basis& basis
 
 SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,
-                             int dim, int column_count)
+                             int dim, int column_count, int threads)
 {
     const int groups = static_cast<int>(characters.size());
     if (static_cast<int>(actions.size()) != groups)
         throw std::invalid_argument("one action per character is required");
     const std::vector<std::vector<int>> orbits = column_orbits(actions, column_count);
 
+    // the orbits are independent, so they are spread over the workers; each worker
+    // keeps its own copy of the orbit-to-index scratch, and only the current
+    // orbit's entries are written -- filling the whole sector per orbit is what
+    // this loop used to cost
+    std::vector<std::vector<std::vector<std::pair<int, Complex>>>> produced(orbits.size());
+    parallel_ranges(static_cast<int>(orbits.size()),
+                    [&](int begin, int end) {
+        std::vector<int> local(column_count, -1);
+        std::vector<Complex> candidate;
+        for (int index = begin; index < end; ++index) {
+            const std::vector<int>& orbit = orbits[index];
+            const int size = static_cast<int>(orbit.size());
+            for (int i = 0; i < size; ++i) local[orbit[i]] = i;
+
+            // the rank the character predicts on this orbit, from the trace of the
+            // projector: it is what the orthonormalisation below has to reproduce
+            Complex trace{0.0, 0.0};
+            for (int g = 0; g < groups; ++g) {
+                Complex fixed{0.0, 0.0};
+                for (int i = 0; i < size; ++i)
+                    if (local[actions[g].act[orbit[i]]] == i) fixed += actions[g].phase[orbit[i]];
+                trace += std::conj(characters[g]) * fixed;
+            }
+            const int expected = static_cast<int>(std::lround(
+                (static_cast<double>(dim) / static_cast<double>(groups)) * trace.real()));
+
+            // the projected basis vectors of this orbit, orthonormalized one at a
+            // time: the image of the projector is spanned by them, so this gives an
+            // orthonormal basis of the isotypic component of the orbit
+            std::vector<std::vector<std::pair<int, Complex>>> accepted;
+            for (int x = 0; x < size && static_cast<int>(accepted.size()) < expected; ++x) {
+                candidate.assign(size, Complex{0.0, 0.0});
+                for (int g = 0; g < groups; ++g) {
+                    const int to = local[actions[g].act[orbit[x]]];
+                    candidate[to] += std::conj(characters[g]) * actions[g].phase[orbit[x]]
+                                     * (static_cast<double>(dim) / static_cast<double>(groups));
+                }
+                // two passes of modified Gram-Schmidt over the accepted supports; a
+                // single pass loses orthogonality as soon as the orbit is larger
+                // than a handful of columns
+                for (int pass = 0; pass < 2; ++pass)
+                    for (const auto& keep : accepted) {
+                        Complex overlap{0.0, 0.0};
+                        for (const auto& entry : keep)
+                            overlap += std::conj(entry.second) * candidate[entry.first];
+                        for (const auto& entry : keep)
+                            candidate[entry.first] -= overlap * entry.second;
+                    }
+                double length = 0.0;
+                for (const Complex value : candidate) length += std::norm(value);
+                length = std::sqrt(length);
+                if (length < 1e-8) continue;        // dependent on what is already in
+                std::vector<std::pair<int, Complex>> vector;
+                for (int i = 0; i < size; ++i) {
+                    if (std::abs(candidate[i]) < 1e-14) continue;
+                    vector.emplace_back(i, candidate[i] / length);
+                }
+                accepted.push_back(std::move(vector));
+            }
+            if (static_cast<int>(accepted.size()) != expected)
+                throw std::runtime_error(
+                    "the isotypic component of an orbit has the wrong dimension: the "
+                    "character table and the action on the sector disagree");
+
+            // one column per accepted vector: the sector columns are the orbit's
+            // own indices, which is what block_matrix expects
+            for (const auto& vector : accepted) {
+                std::vector<std::pair<int, Complex>> column;
+                column.reserve(vector.size());
+                for (const auto& entry : vector)
+                    column.emplace_back(orbit[entry.first], entry.second);
+                produced[index].push_back(std::move(column));
+            }
+            for (int i = 0; i < size; ++i) local[orbit[i]] = -1;   // leave the scratch clean
+        }
+    }, threads);
+
     SectorVectors out;
     out.start.assign(1, 0);
-    std::vector<Complex> candidate;             // one orbit, never the sector
-    for (int index = 0; index < static_cast<int>(orbits.size()); ++index) {
-        const std::vector<int>& orbit = orbits[index];
-        const int size = static_cast<int>(orbit.size());
-        std::vector<int> local(column_count, -1);
-        for (int i = 0; i < size; ++i) local[orbit[i]] = i;
-
-        // the rank the character predicts on this orbit, from the trace of the
-        // projector: it is what the orthonormalisation below has to reproduce
-        Complex trace{0.0, 0.0};
-        for (int g = 0; g < groups; ++g) {
-            Complex fixed{0.0, 0.0};
-            for (int i = 0; i < size; ++i)
-                if (local[actions[g].act[orbit[i]]] == i) fixed += actions[g].phase[orbit[i]];
-            trace += std::conj(characters[g]) * fixed;
-        }
-        const int expected = static_cast<int>(std::lround(
-            (static_cast<double>(dim) / static_cast<double>(groups)) * trace.real()));
-
-        // the projected basis vectors of this orbit, orthonormalized one at a
-        // time: the image of the projector is spanned by them, so this gives an
-        // orthonormal basis of the isotypic component of the orbit
-        std::vector<std::vector<std::pair<int, Complex>>> accepted;
-        for (int x = 0; x < size && static_cast<int>(accepted.size()) < expected; ++x) {
-            candidate.assign(size, Complex{0.0, 0.0});
-            for (int g = 0; g < groups; ++g) {
-                const int to = local[actions[g].act[orbit[x]]];
-                candidate[to] += std::conj(characters[g]) * actions[g].phase[orbit[x]]
-                                 * (static_cast<double>(dim) / static_cast<double>(groups));
+    for (const auto& orbit_vectors : produced)
+        for (const auto& column : orbit_vectors) {
+            for (const auto& entry : column) {
+                out.columns.push_back(entry.first);
+                out.data.push_back(entry.second);
             }
-            // two passes of modified Gram-Schmidt over the accepted supports; a
-            // single pass loses orthogonality as soon as the orbit is larger
-            // than a handful of columns
-            for (int pass = 0; pass < 2; ++pass)
-                for (const auto& keep : accepted) {
-                    Complex overlap{0.0, 0.0};
-                    for (const auto& entry : keep)
-                        overlap += std::conj(entry.second) * candidate[entry.first];
-                    for (const auto& entry : keep)
-                        candidate[entry.first] -= overlap * entry.second;
-                }
-            double norm = 0.0;
-            for (const Complex value : candidate) norm += std::norm(value);
-            norm = std::sqrt(norm);
-            if (norm < 1e-8) continue;          // dependent on what is already in
-            std::vector<std::pair<int, Complex>> vector;
-            for (int i = 0; i < size; ++i) {
-                if (std::abs(candidate[i]) < 1e-14) continue;
-                vector.emplace_back(i, candidate[i] / norm);
-            }
-            accepted.push_back(std::move(vector));
-        }
-        if (static_cast<int>(accepted.size()) != expected)
-            throw std::runtime_error(
-                "the isotypic component of an orbit has the wrong dimension: the "
-                "character table and the action on the sector disagree");
-
-        for (const auto& vector : accepted) {
-            for (const auto& entry : vector) out.columns.push_back(orbit[entry.first]);
-            for (const auto& entry : vector) out.data.push_back(entry.second);
             out.start.push_back(static_cast<int>(out.columns.size()));
         }
-    }
     return out;
 }
 
@@ -276,7 +298,8 @@ SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTe
     return transpose(by_column);
 }
 
-SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors)
+SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors,
+                          int threads)
 {
     const int m = vectors.vectors();
     SparseMatrix by_column;
@@ -301,51 +324,60 @@ SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vecto
         }
 
     // V^T H V, one column at a time: H applied to the column of V stays sparse,
-    // and every entry of it is scattered over the few block rows that contain
-    // its sector row.  Nothing of the size of the sector is ever allocated.
-    // The product walks the columns of H, so H is transposed once: walking its
-    // rows instead would accumulate (H^T v).
+    // and every entry of it is scattered over the few block rows that contain its
+    // sector row.  The product walks the columns of H, so H is transposed once;
+    // the columns of the block are independent and are spread over the workers.
     const SparseMatrix transposed = transpose(matrix);
-    std::vector<std::pair<int, Complex>> applied;
-    std::vector<std::pair<int, Complex>> terms;
+    std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(m));
+    parallel_ranges(m, [&](int begin, int end) {
+        std::vector<std::pair<int, Complex>> applied;
+        std::vector<std::pair<int, Complex>> terms;
+        for (int c = begin; c < end; ++c) {
+            applied.clear();
+            for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
+                const int source = vectors.columns[a];
+                const Complex weight = vectors.data[a];
+                for (int b = transposed.indptr[source]; b < transposed.indptr[source + 1]; ++b)
+                    applied.emplace_back(transposed.indices[b], transposed.data[b] * weight);
+            }
+            std::sort(applied.begin(), applied.end(),
+                      [](const auto& left, const auto& right) { return left.first < right.first; });
+            terms.clear();
+            for (std::size_t i = 0; i < applied.size();) {
+                const int row = applied[i].first;
+                Complex sum{0.0, 0.0};
+                std::size_t j = i;
+                while (j < applied.size() && applied[j].first == row) {
+                    sum += applied[j].second;
+                    ++j;
+                }
+                i = j;
+                if (std::abs(sum) < 1e-14) continue;
+                for (int t = start[row]; t < start[row + 1]; ++t)
+                    terms.emplace_back(row_of[t], value_of[t] * sum);
+            }
+            std::sort(terms.begin(), terms.end(),
+                      [](const auto& left, const auto& right) { return left.first < right.first; });
+            std::vector<std::pair<int, Complex>>& column = produced[c];
+            for (std::size_t i = 0; i < terms.size();) {
+                const int row = terms[i].first;
+                Complex sum{0.0, 0.0};
+                std::size_t j = i;
+                while (j < terms.size() && terms[j].first == row) {
+                    sum += terms[j].second;
+                    ++j;
+                }
+                i = j;
+                if (std::abs(sum) < 1e-14) continue;
+                column.emplace_back(row, sum);
+            }
+        }
+    }, threads);
+
     for (int c = 0; c < m; ++c) {
-        applied.clear();
-        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
-            const int source = vectors.columns[a];
-            const Complex weight = vectors.data[a];
-            for (int b = transposed.indptr[source]; b < transposed.indptr[source + 1]; ++b)
-                applied.emplace_back(transposed.indices[b], transposed.data[b] * weight);
-        }
-        std::sort(applied.begin(), applied.end(),
-                  [](const auto& left, const auto& right) { return left.first < right.first; });
-        terms.clear();
-        for (std::size_t i = 0; i < applied.size();) {
-            const int row = applied[i].first;
-            Complex sum{0.0, 0.0};
-            std::size_t j = i;
-            while (j < applied.size() && applied[j].first == row) {
-                sum += applied[j].second;
-                ++j;
-            }
-            i = j;
-            if (std::abs(sum) < 1e-14) continue;
-            for (int t = start[row]; t < start[row + 1]; ++t)
-                terms.emplace_back(row_of[t], value_of[t] * sum);
-        }
-        std::sort(terms.begin(), terms.end(),
-                  [](const auto& left, const auto& right) { return left.first < right.first; });
-        for (std::size_t i = 0; i < terms.size();) {
-            const int row = terms[i].first;
-            Complex sum{0.0, 0.0};
-            std::size_t j = i;
-            while (j < terms.size() && terms[j].first == row) {
-                sum += terms[j].second;
-                ++j;
-            }
-            i = j;
-            if (std::abs(sum) < 1e-14) continue;
-            by_column.indices.push_back(row);
-            by_column.data.push_back(sum);
+        for (const auto& entry : produced[c]) {
+            by_column.indices.push_back(entry.first);
+            by_column.data.push_back(entry.second);
         }
         by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
     }
