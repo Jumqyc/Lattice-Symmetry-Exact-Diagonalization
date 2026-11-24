@@ -41,6 +41,22 @@ from representation import TrivialGroup
 _twod = importlib.import_module('geometry.2dsym')
 
 
+def _element_of(perm, local) -> tuple:
+    '''
+    What identifies a point-group element of a model.
+
+    Args:
+        perm: the permutation of the sites.
+        local: the monomial local action per species, as ``(perm, phases)``.
+    Returns:
+        A hashable value: the permutation and the local action, rounded so that two
+        operations that differ only by the last digit of a cosine are one element.
+    '''
+    return (tuple(perm.perm),
+            tuple(sorted((species, tuple(np.round(p, 8)), tuple(np.round(phase, 8)))
+                         for species, (p, phase) in local.items())))
+
+
 # key of a sector: (momentum label, little-group irrep, spin-flip parity)
 SectorKey = tuple[tuple[int, ...], Optional[str], Optional[int]]
 
@@ -131,12 +147,11 @@ class Model:
                 None.  An element is either a bare ``(d, d)`` rotation about the
                 origin, or a full ``LatticeAction`` -- the latter is how a glide
                 plane or a screw axis enters, since those are a rotation plus a
-                fractional translation.  Any finite subgroup of the orthogonal
-                group of the plane can be given as an
-                group built by :func:`representation.group_of`, which reads its
-                character table off the operation list; that is also what the
-                little groups are, since they are subgroups rather than one of
-                the named groups.
+                fractional translation.  Any list of such operations can be
+                handed in as it stands: the model asks
+                :func:`geometry.2dsym.group_of` for the group they form, which is
+                also how the little groups are built, since they are subgroups
+                rather than one of the named groups.
             MAX_EXTENSION: half-width of the periodically extended copy kept
                 for plotting.
             orbital_mixing: per species, the local action of a rotation on that
@@ -184,47 +199,65 @@ class Model:
                 raise ValueError(f"orbital_mixing names species that do not occur: {sorted(unknown)}.")
 
         # ── point-group actions: geometry -> permutation of the basis ───
-        self.actions: list[AffineAction] = []
-        self.site_perms: list[Permutation] = []
-        self.local: list[dict[str, tuple[np.ndarray, np.ndarray]]] = []
+        self.actions, self.site_perms, self.local = self._read_point_group(orbital_mixing)
+        self.hilbert: list[MonomialAction] = [
+            MonomialAction(perm, self.species, local)
+            for perm, local in zip(self.site_perms, self.local)]
+        self._check_closed()
+        self.couplings: list[Coupling] = []
+
+    def _read_point_group(self, orbital_mixing):
+        '''
+        The point group, read as a site permutation and a local action each.
+
+        Args:
+            orbital_mixing: per species, the local action of a rotation on that
+                species' orbitals, or None.
+        Returns:
+            ``(actions, site_perms, local)``: the elements as lattice actions, the
+            permutations of the sites they induce, and the monomial local action per
+            species.
+        Raises:
+            ValueError: if an element does not map the lattice onto itself, or if its
+                local action is not monomial.
+        '''
+        actions, site_perms, local_actions = [], [], []
         for op in self.point_group:
-            # an element may be a bare matrix (a rotation about the origin) or
-            # a full affine action, which is how a glide or a screw enters
+            # an element is a bare rotation about the origin, or a full affine
+            # action -- which is how a glide or a screw enters
             action = (op if isinstance(op, LatticeAction)
                       else AffineAction.from_matrix(op, self.spatial_dim))
             perm = from_lattice_action(action, self.lattice)   # rejects non-symmetries
             local = {sp: extract_monomial(mixing(action.rotation))
                      for sp, mixing in (orbital_mixing or {}).items()}
-            # two operations are the same element only if both the site
-            # permutation and the local action agree: on a small torus a
-            # rotation and a translation can move the sites identically while
-            # acting differently on the orbitals
-            def signature(perm, local):
-                return (tuple(perm.perm),
-                        tuple(sorted((sp, tuple(np.round(p, 8)), tuple(np.round(ph, 8)))
-                                     for sp, (p, ph) in local.items())))
-            if signature(perm, local) in {signature(p, l)
-                                         for p, l in zip(self.site_perms, self.local)}:
-                continue        # duplicated operation
-            self.actions.append(action)
-            self.site_perms.append(perm)
-            self.local.append(local)
+            # two operations are the same element only when both the permutation and
+            # the local action agree: on a small torus a rotation and a translation
+            # can move the sites alike and act differently on the orbitals
+            if _element_of(perm, local) in {_element_of(p, l)
+                                            for p, l in zip(site_perms, local_actions)}:
+                continue
+            actions.append(action)
+            site_perms.append(perm)
+            local_actions.append(local)
+        return actions, site_perms, local_actions
 
-        self.hilbert: list[MonomialAction] = [
-            MonomialAction(perm, self.species, local)
-            for perm, local in zip(self.site_perms, self.local)]
+    def _check_closed(self) -> None:
+        '''
+        Refuse a point group whose site permutations are not closed.
 
-        # the site permutations must be closed, otherwise this is not a group
+        Raises:
+            ValueError: if the product of two of its operations is not one of them.
+            Integer permutations, so the comparison is exact.
+        '''
         perms = {tuple(p.perm) for p in self.site_perms}
-        for a in self.site_perms:
-            for b in self.site_perms:
-                if tuple((a * b).perm) not in perms:
+        for first in self.site_perms:
+            for second in self.site_perms:
+                if tuple((first * second).perm) not in perms:
                     raise ValueError(
-                        f"The supplied point group is not closed: the product of two of its "
-                        f"operations is not in the set ({len(self.site_perms)} distinct "
-                        f"operations). Complete the group before building the model.")
-
-        self.couplings: list[Coupling] = []
+                        f"The supplied point group is not closed: the product of two of "
+                        f"its operations is not in the set ({len(self.site_perms)} "
+                        "distinct operations). Complete the group before building the "
+                        "model.")
 
     # ── geometry facade: the data lives on self.lattice ─────────────────
     # these are delegations, not copies, so there is one source of truth

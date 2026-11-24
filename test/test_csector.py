@@ -23,7 +23,6 @@ from scipy.sparse import csr_matrix
 
 twod = importlib.import_module('geometry.2dsym')
 from ed import Coupling, Model
-from hilbert_action import circle_doublet
 
 try:
     import _edkern

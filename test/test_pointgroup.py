@@ -28,7 +28,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import importlib
-from itertools import product
 
 import numpy as np
 
@@ -42,7 +41,6 @@ import reference
 from ed import Coupling, Model
 from hilbert_action import circle_doublet
 from lattice_action import AffineAction, label_action
-from representation import TrivialGroup
 
 X = np.array([[0., 1.], [1., 0.]], dtype=complex)
 Y = np.array([[0., -1j], [1j, 0.]], dtype=complex)

@@ -81,17 +81,6 @@ class CyclicGroup(PointGroup):
         self._ops = [np.asarray(op, dtype=float) for op in operations]
         self.n = len(self._ops)
 
-    def _get_rotation_power(self, op: np.ndarray) -> int:
-        '''
-        The power *k* (mod *n*) such that *op* is the rotation by 2πk/n.
-
-        Args:
-            op: an operation of the group.
-        Returns:
-            The power, as an integer in ``[0, n)``.
-        '''
-        return self._rotation_power(op)
-
     def __iter__(self):
         return iter([op.copy() for op in self._ops])
 
@@ -230,7 +219,7 @@ class DihedralGroup(PointGroup):
             return -1.0 if m % 2 == 0 else 1.0
         return 0.0
 
-    def _get_rotation_power(self, op: np.ndarray) -> int:
+    def _rotation_power(self, op: np.ndarray) -> int:
         '''
         If *op* is a **rotation**, return the power *k* (mod *n*) such that
         *op* ≈ Cₙᵏ.
@@ -268,7 +257,7 @@ class DihedralGroup(PointGroup):
             return 'E'
 
         if self._is_rotation(op):
-            k = self._get_rotation_power(op)
+            k = self._rotation_power(op)
             if 2 * k == self.n:                 # rotation by π
                 return 'C2'
             return 'Cn'                         # paired ± rotation
@@ -276,7 +265,7 @@ class DihedralGroup(PointGroup):
         # Reflection
         if self.n % 2 == 1:
             return 'sigma'                      # all reflections in one class
-        k = self._get_rotation_power(op)
+        k = self._rotation_power(op)
         return 'sv' if k % 2 == 0 else 'sd'
 
 
@@ -340,7 +329,7 @@ class C2(CyclicGroup):
         return ['A', 'B']
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)          # 0 → E,  1 → C₂
+        k = self._rotation_power(op)          # 0 → E,  1 → C₂
         if irrp == 'A':
             return 1.0
         if irrp == 'B':
@@ -374,7 +363,7 @@ class C3(CyclicGroup):
         return ['A', 'E1', 'E2']
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
+        k = self._rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
         omega = np.exp(2j * np.pi / 3)
         match irrp:
             case 'A':
@@ -411,7 +400,7 @@ class C4(CyclicGroup):
         return ['A', 'B', 'E1', 'E2']
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
+        k = self._rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
         match irrp:
             case 'A':
                 return 1.0
@@ -453,7 +442,7 @@ class C6(CyclicGroup):
         return ['A', 'B', 'E1', 'E2', 'E1*', 'E2*']
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
+        k = self._rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
         omega = np.exp(1j * np.pi / 3)     # exp(πi/3)
 
         match irrp:
@@ -544,7 +533,7 @@ class D4(DihedralGroup):
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
         is_rot = self._is_rotation(op)
-        k = self._get_rotation_power(op)       # rotation power / axis index (see docstring)
+        k = self._rotation_power(op)       # rotation power / axis index (see docstring)
         cls = self._conjugacy_class(op)
         match irrp:
             case 'A1':
@@ -596,7 +585,7 @@ class D6(DihedralGroup):
 
     def character(self, irrp: str, op: np.ndarray) -> complex:
         is_rot = self._is_rotation(op)
-        k = self._get_rotation_power(op)       # rotation power / axis index
+        k = self._rotation_power(op)       # rotation power / axis index
 
         match irrp:
             case 'A1':
