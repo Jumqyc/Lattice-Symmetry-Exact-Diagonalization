@@ -50,6 +50,52 @@ def star(model: Model, k: tuple[int, ...]) -> set[tuple[int, ...]]:
             for op in model.point_group}
 
 
+def test_sector_specs(model: Model, label: str, tol: float = 1e-10,
+                      verbose: bool = True) -> bool:
+    '''
+    A spec carries the whole sector: its keys, its dimension and its character.
+
+    The dimension is the character of the identity, the two factors of the spec
+    multiply back into the induced character over the whole group, and the specs
+    cover every momentum exactly once per little-group irrep.
+    '''
+    specs = list(model.sector_specs())
+    order = len(model.tr_group) * len(list(model.point_group))
+    failures = []
+    for spec in specs:
+        if abs(spec.characters[0] - spec.dim) > tol:
+            failures.append(f'{spec.key}: chi(e) = {spec.characters[0]:.3f} but dim = {spec.dim}')
+        # chi_{k,alpha}(t, r) = sum_gamma chi_k(gamma t) chi~_alpha(gamma r gamma^-1)
+        k, alpha, _ = spec.key
+        little, cosets = model.little_group(k)
+        little_ops = list(little)
+        rebuild = np.zeros(order, dtype=complex)
+        for i, t in enumerate(model.tr_group):
+            t_vec = model.tr_group.translation_vector(t)
+            for j, r in enumerate(list(model.point_group)):
+                value = 0j
+                for gamma in cosets:
+                    weight = np.exp(1j * (model.tr_group.momentum_vector(
+                        k, model.bz_cellvectors) @ (gamma @ t_vec)))
+                    conjugated = gamma @ r @ np.linalg.inv(gamma)
+                    if any(np.allclose(conjugated, op) for op in little_ops):
+                        value += weight * little.character(alpha, conjugated)
+                rebuild[i * len(list(model.point_group)) + j] = value
+        worst = float(np.max(np.abs(rebuild - spec.characters)))
+        if worst > tol:
+            failures.append(f'{spec.key}: the factors do not rebuild the character ({worst:.1e})')
+    momenta = len(model.tr_group.all_momenta())
+    covered = len({spec.key[0] for spec in specs})
+    if covered != momenta:
+        failures.append(f'{covered} momenta covered of {momenta}')
+    ok = not failures
+    if verbose:
+        print(f"  {'✓' if ok else 'FAIL'}  {label}: {len(specs)} specs over {covered} momenta, "
+              f"dimension and factors agree with the induced character"
+              + ('' if ok else ': ' + '; '.join(failures[:2])))
+    return ok
+
+
 def test_orthogonality(model: Model, label: str, tol: float = 1e-10,
                        verbose: bool = True) -> bool:
     '''
@@ -113,7 +159,9 @@ def main():
     print()
     ok = True
     for label, N1, N2, pg, a1, a2 in CASES:
-        ok &= test_orthogonality(build(N1, N2, pg, a1, a2), label)
+        model = build(N1, N2, pg, a1, a2)
+        ok &= test_orthogonality(model, label)
+        ok &= test_sector_specs(model, label)
     print()
     if not ok:
         print('TEST FAILED.')

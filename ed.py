@@ -19,7 +19,7 @@ space.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import product
 from typing import Callable, Optional
 
@@ -37,6 +37,50 @@ from representation import TrivialGroup
 
 # key of a sector: (momentum label, little-group irrep, spin-flip parity)
 SectorKey = tuple[tuple[int, ...], Optional[str], Optional[int]]
+
+
+@dataclass
+class SectorSpec:
+    '''
+    One sector of the lattice group and the character of the whole group.
+
+    This is what the decomposition passes around: a sector is a pair ``(k, alpha)``
+    -- a momentum carried by the translations and an irreducible representation of
+    its little group -- and everything the projection needs is the induced
+    character of that pair on the elements of ``G_latt = G_tr x G_pt``, together with
+    the two factors it is built from:
+
+        chi_{k,alpha}(t, r) = sum_{gamma in G_pt / G_k} chi_k(gamma t) chi~_alpha(gamma r gamma^-1)
+
+    The factors are kept beside the character because the projection applies them
+    separately -- the momentum first, then the little group -- which is what keeps it
+    affordable; the character is what says, in one object, which sector this is.
+
+    Attributes:
+        key: ``(k, alpha, s)``, the momentum label, the little-group irrep and the
+            spin-flip parity (None when the spin flip is not resolved).
+        dim: dimension of the sector, ``|G_pt / G_k| * d_alpha``.
+        characters: the induced character on every element of the lattice group,
+            indexed by ``translation * |G_pt| + rotation``.
+        translation_characters: the character of the momentum at every translation.
+        little_characters: the character of the little group's irrep.
+    '''
+    key: SectorKey
+    dim: int
+    characters: NDArray[np.complex128]
+    translation_characters: NDArray[np.complex128]
+    little_characters: NDArray[np.complex128]
+
+    def project(self, little_characters: NDArray[np.complex128]) -> 'SectorSpec':
+        '''
+        The same sector with the characters of another irrep of the little group.
+
+        Args:
+            little_characters: the characters to use.
+        Returns:
+            A spec with those characters and the dimension that goes with them.
+        '''
+        return replace(self, little_characters=little_characters)
 
 
 @dataclass
@@ -401,7 +445,45 @@ class Model:
         self.check_symmetry()
         return kernel.spectra_free(self, count=count, sztot=Sztot, threads=threads)
 
-    def sector_characters(self) -> dict[tuple, tuple[int, NDArray[np.complex128]]]:
+    def sector_specs(self, Sztot: Optional[int] = None, spin_flip: bool = False
+                     ) -> 'Iterator[SectorSpec]':
+        '''
+        Every sector of the charge sector, with the character of the whole group.
+
+        Args:
+            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            spin_flip: if True, each sector is split by the parity of the spin flip,
+                which commutes with the whole group.
+        Yields:
+            A :class:`SectorSpec` per irreducible sector.  The spin flip appears in
+            the key as the parity and in the characters doubled into the product
+            group ``G_latt x Z_2``, which is why the spec is what the decomposition
+            hands to the projection.
+        Raises:
+            ValueError: if *spin_flip* is asked for a charge sector the spin flip
+                does not preserve.
+        '''
+        if spin_flip and Sztot is not None and \
+                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
+            raise ValueError(
+                "The spin flip maps sum(state) == Sztot onto "
+                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
+                "Sztot is self-conjugate.")
+        characters = self.sector_characters(one_per_star=False)
+        for (k, alpha), (dim, full) in characters.items():
+            little, cosets = self.little_group(k)
+            little_characters = np.array([little.character(alpha, op) for op in little],
+                                         dtype=complex)
+            translations = np.array([self.tr_group.character(k, t) for t in self.tr_group],
+                                    dtype=complex)
+            for parity in ((None,) if not spin_flip else (1, -1)):
+                spec = SectorSpec(key=(k, alpha, parity), dim=len(cosets) * little.irrep_dim(alpha),
+                                  characters=full, translation_characters=translations,
+                                  little_characters=little_characters)
+                yield spec if parity is None else spec
+
+    def sector_characters(self, one_per_star: bool = True
+                           ) -> dict[tuple, tuple[int, NDArray[np.complex128]]]:
         '''
         The induced character of every sector of the lattice group.
 
@@ -421,6 +503,8 @@ class Model:
         and ``r`` over the point group, so the array is indexed by
         ``translation * |G_pt| + rotation``.
 
+        Args:
+            one_per_star: list one momentum per star, or every momentum.
         Returns:
             A dict from ``(k, α)`` to ``(dimension, characters)``, where the
             dimension is ``|G_pt / G_k| d_α`` -- the character of the identity -- and
@@ -429,7 +513,7 @@ class Model:
         rotations = list(self.point_group)
         out = {}
         for k in self.tr_group.all_momenta():
-            if tuple(k) != tuple(min(_star(self, k))):
+            if one_per_star and tuple(k) != tuple(min(_star(self, k))):
                 continue                      # one momentum per star
             little, coset_reps = self.little_group(k)
             little_ops = list(little)

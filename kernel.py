@@ -232,34 +232,6 @@ def _compose(first, second, count: int) -> '_edkern.PhasedPermutation':
     return _edkern.PhasedPermutation(act, phase)
 
 
-def _little_group(model: 'Model', sector, basis, k, characters, translations):
-    '''
-    The little group of one momentum, acting on the orbit labels.
-
-    Args:
-        model: the model.
-        sector: the orbit labels of the momentum sector.
-        basis: the computational basis.
-        k: the momentum label.
-        characters: the character of the momentum at every translation.
-        translations: the translations as kernel actions.
-    Returns:
-        ``(actions, irreps)``: one action per little-group element -- the identity
-        alone when the group is trivial -- and one entry per irrep of it, as
-        ``(label, dimension, characters)``.
-    '''
-    little, _ = model.little_group(k)
-    ops = list(little)
-    if len(ops) == 1:
-        return ([_identity_permutation(sector.orbits)], [('A', 1, [1.0 + 0.0j])])
-    actions = [_edkern.action_on_orbits(
-        basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]),
-        characters, translations) for op in ops]
-    irreps = [(alpha, little.irrep_dim(alpha),
-               [little.character(alpha, op) for op in ops]) for alpha in little.all_irrps()]
-    return actions, irreps
-
-
 def _isotypic(actions: list, characters: list, flip, parity, dim: int, count: int,
               threads: int):
     '''
@@ -286,9 +258,45 @@ def _isotypic(actions: list, characters: list, flip, parity, dim: int, count: in
     return _edkern.isotypic_basis(both, both_characters, dim, count, threads)
 
 
-def _sector_pieces(model: 'Model', basis, orbits, spin, spin_flip: bool, threads: int):
+def _momentum_setup(model: 'Model', basis, orbits, spec, spin) -> tuple:
     '''
-    One sector at a time: its labels, its character and its adapted vectors.
+    What one momentum needs, computed once for all of its irreps.
+
+    Args:
+        model: the model.
+        basis: the computational basis.
+        orbits: the orbit labels of the whole basis.
+        spec: a sector of that momentum, for its character.
+        spin: the spin flip as a kernel action, or None.
+    Returns:
+        ``(sector, characters, actions, flip, little)``: the orbit labels restricted
+        to the momentum, its character at every translation, the little group acting
+        on the labels, the spin flip acting on them, and the little group itself.
+    '''
+    characters = [complex(value) for value in spec.translation_characters]
+    sector = _edkern.sector_subset(orbits, characters)
+    little, _ = model.little_group(spec.key[0])
+    ops = list(little)
+    if sector.orbits == 0:
+        return sector, characters, [], None, little
+    if len(ops) == 1:
+        actions = [_identity_permutation(sector.orbits)]
+    else:
+        translated = globals()["translations"](model)
+        actions = [_edkern.action_on_orbits(
+            basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]),
+            characters, translated) for op in ops]
+    flip = None
+    if spin is not None:
+        flip = _edkern.action_on_orbits(basis, sector, spin, characters,
+                                        globals()["translations"](model))
+    return sector, characters, actions, flip, little
+
+
+def sector_pieces(model: 'Model', basis, orbits, spin, spin_flip: bool, threads: int,
+                  sztot: Optional[int] = None):
+    '''
+    One sector at a time, from the sector and the character of the whole group.
 
     Args:
         model: the model.
@@ -297,26 +305,26 @@ def _sector_pieces(model: 'Model', basis, orbits, spin, spin_flip: bool, threads
         spin: the spin flip as a kernel action, or None.
         spin_flip: whether the spin flip is resolved.
         threads: workers for the projection.
+        sztot: total charge, or None for the whole space.
     Yields:
-        ``((k, alpha, s), sector, characters, vectors)``.
+        ``(spec, sector, characters, vectors)``: the sector together with the
+        character of the whole group, the orbit labels it lives on and its adapted
+        vectors.
     '''
-    translations = globals()["translations"](model)
-    for k in model.tr_group.all_momenta():
-        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        # the orbits whose column is empty for this momentum are dropped, the same
-        # way the momentum basis drops them
-        sector = _edkern.sector_subset(orbits, characters)
+    setup = {}
+    for spec in model.sector_specs(sztot, spin_flip):
+        k = spec.key[0]
+        if k not in setup:
+            setup[k] = _momentum_setup(model, basis, orbits, spec, spin)
+        sector, characters, actions, flip, little = setup[k]
         if sector.orbits == 0:
             continue
-        actions, irreps = _little_group(model, sector, basis, k, characters, translations)
-        flip = (_edkern.action_on_orbits(basis, sector, spin, characters, translations)
-                if spin_flip else None)
-        for alpha, dim, chars in irreps:
-            for parity in ((None,) if not spin_flip else (1, -1)):
-                vectors = _isotypic(actions, chars, flip, parity, dim, sector.orbits, threads)
-                if vectors.vectors() == 0:
-                    continue
-                yield (k, alpha, parity), sector, characters, vectors
+        vectors = _isotypic(actions, [complex(value) for value in spec.little_characters],
+                            flip, spec.key[2], little.irrep_dim(spec.key[1]),
+                            sector.orbits, threads)
+        if vectors.vectors() == 0:
+            continue
+        yield spec, sector, characters, vectors
 
 
 def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
@@ -343,16 +351,15 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
-    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
-                                                           spin_flip, threads):
+    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin, spin_flip,
+                                                           threads, sztot):
         block = _edkern.sector_block(basis, terms, sector, characters, vectors, threads)
         asked = min(count, vectors.vectors())
         # a degenerate level needs one vector per copy, and the copies are resolved
         # one cycle at a time, so the budget grows with the request
-        out[key] = np.asarray(_edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
+        out[spec.key] = np.asarray(
+            _edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
     return out
-
-
 def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
                  spin_flip: bool = False, threads: int = 0) -> dict:
     '''
@@ -376,16 +383,14 @@ def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
-    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
-                                                           spin_flip, threads):
+    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin, spin_flip,
+                                                           threads, sztot):
         asked = min(count, vectors.vectors())
-        out[key] = np.asarray(_edkern.lowest_eigenvalues_free(
+        out[spec.key] = np.asarray(_edkern.lowest_eigenvalues_free(
             lambda vector: _edkern.sector_apply_block(basis, terms, sector, characters,
                                                       vectors, vector, threads),
             vectors.vectors(), asked, max(200, 40 * asked), 1e-10, threads))
     return out
-
-
 def sectors(model: 'Model', sztot: Optional[int] = None, spin_flip: bool = False) -> dict:
     '''
     The whole decomposition, one sector at a time.
@@ -409,9 +414,9 @@ def sectors(model: 'Model', sztot: Optional[int] = None, spin_flip: bool = False
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     threads = _threads()
     out = {}
-    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
-                                                           spin_flip, threads):
+    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin, spin_flip,
+                                                           threads, sztot):
         block = to_scipy(_edkern.sector_block(basis, terms, sector, characters, vectors, threads))
         adapted = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors, threads))
-        out[key] = (adapted.tocsr(), block.tocsr())
+        out[spec.key] = (adapted.tocsr(), block.tocsr())
     return out
