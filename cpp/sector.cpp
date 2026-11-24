@@ -160,7 +160,7 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                     "character table and the action on the sector disagree");
 
             // one column per accepted vector: the sector columns are the orbit's
-            // own indices, which is what block_matrix expects
+            // own indices, which is what the block multiplication expects
             for (const auto& vector : accepted) {
                 std::vector<std::pair<int, Complex>> column;
                 column.reserve(vector.size());
@@ -262,182 +262,7 @@ private:
 
 }  // namespace
 
-SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
-                                const SparseColumns& columns, int threads)
-{
-    const int n = basis.size();
-    const int count = columns.columns();
 
-    // Where a state sits in the momentum basis.  The columns are translation
-    // orbits, so every state is in exactly one of them: the map is one entry per
-    // state, and reading it is the only random access left in the product.  It
-    // replaces the three arrays that used to hold the same information apart,
-    // which made one lookup touch two unrelated cache lines.
-    struct Placement {
-        int column;
-        Complex weight;
-    };
-    std::vector<Placement> placement(static_cast<std::size_t>(n));
-    for (int c = 0; c < count; ++c)
-        for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a)
-            placement[columns.indices[a]] = Placement{c, columns.data[a]};
-
-    // The terms are read into their tables once per call.
-    std::vector<PreparedTerm> prepared;
-    prepared.reserve(couplings.size());
-    for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
-
-    // One column of the product at a time: H is applied to the column's states,
-    // and the images are accumulated in a local list and merged in place.  The
-    // list holds one entry per image of one column -- a few thousand -- so it
-    // lives in cache, and no accumulator the size of the basis is touched at all;
-    // that is the difference between a random access per image and a local one.
-    // the widest column decides the size of the tables once, so no worker has to
-    // grow anything while it works
-    int widest = 0;
-    for (int c = 0; c < count; ++c)
-        widest = std::max(widest, columns.indptr[c + 1] - columns.indptr[c]);
-    const int capacity = widest * static_cast<int>(prepared.size()) + 1;
-
-    std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(count));
-    parallel_ranges(count, [&](int begin, int end) {
-        Accumulator images(capacity);
-        Accumulator scattered(capacity);
-        std::vector<std::pair<int, Complex>> merged;
-        std::vector<int> digits;
-        std::vector<int> prefix;
-        for (int c = begin; c < end; ++c) {
-            images.clear();
-            for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a) {
-                const int state = columns.indices[a];
-                const Complex weight = columns.data[a];
-                basis.unpack_into(basis.state(state), digits);
-                // the prefix charges are what lets a term reach the index of its
-                // image by the difference the changed digits make
-                if (!basis.has_table()) basis.prefix_charges(digits, prefix);
-                merged.clear();
-                for (const PreparedTerm& term : prepared)
-                    apply_prepared(basis, term, basis.state(state), digits, prefix, state, merged);
-                for (const auto& entry : merged) images.add(entry.first, weight * entry.second);
-            }
-            // the images of the column, scattered over the columns that hold them:
-            // that is B^T applied to the result of H
-            images.take(merged);
-            scattered.clear();
-            for (const auto& entry : merged) {
-                if (std::abs(entry.second) <= 1e-14) continue;
-                const Placement& where = placement[static_cast<std::size_t>(entry.first)];
-                scattered.add(where.column, std::conj(where.weight) * entry.second);
-            }
-            std::vector<std::pair<int, Complex>>& column = produced[c];
-            scattered.take(column);
-            column.erase(std::remove_if(column.begin(), column.end(),
-                                        [](const auto& entry) {
-                                            return std::abs(entry.second) <= 1e-14;
-                                        }),
-                         column.end());
-        }
-    }, threads);
-
-    SparseMatrix by_column;
-    by_column.rows = count;
-    by_column.cols = count;
-    by_column.indptr.assign(static_cast<std::size_t>(count) + 1, 0);
-    for (int c = 0; c < count; ++c) {
-        for (const auto& entry : produced[c]) {
-            by_column.indices.push_back(entry.first);
-            by_column.data.push_back(entry.second);
-        }
-        by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
-    }
-    return transpose(by_column);
-}
-
-SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors,
-                          int threads)
-{
-    const int m = vectors.vectors();
-    SparseMatrix by_column;
-    by_column.rows = m;
-    by_column.cols = m;
-    by_column.indptr.assign(static_cast<std::size_t>(m) + 1, 0);
-    if (m == 0) return by_column;
-
-    // V^T, walked by sector column: the block rows whose vector contains that
-    // column.  A vector lives on one orbit, so this stays as sparse as V.
-    std::vector<int> start(static_cast<std::size_t>(matrix.cols) + 1, 0);
-    for (const int column : vectors.columns) ++start[column + 1];
-    for (int a = 0; a < matrix.cols; ++a) start[a + 1] += start[a];
-    std::vector<int> row_of(vectors.columns.size());
-    std::vector<Complex> value_of(vectors.columns.size());
-    std::vector<int> cursor(start.begin(), start.end() - 1);
-    for (int c = 0; c < m; ++c)
-        for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
-            const int at = cursor[vectors.columns[a]]++;
-            row_of[at] = c;
-            value_of[at] = std::conj(vectors.data[a]);
-        }
-
-    // V^T H V, one column at a time: H applied to the column of V stays sparse,
-    // and every entry of it is scattered over the few block rows that contain its
-    // sector row.  The product walks the columns of H, so H is transposed once;
-    // the columns of the block are independent and are spread over the workers.
-    const SparseMatrix transposed = transpose(matrix);
-    std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(m));
-    parallel_ranges(m, [&](int begin, int end) {
-        std::vector<std::pair<int, Complex>> applied;
-        std::vector<std::pair<int, Complex>> terms;
-        for (int c = begin; c < end; ++c) {
-            applied.clear();
-            for (int a = vectors.start[c]; a < vectors.start[c + 1]; ++a) {
-                const int source = vectors.columns[a];
-                const Complex weight = vectors.data[a];
-                for (int b = transposed.indptr[source]; b < transposed.indptr[source + 1]; ++b)
-                    applied.emplace_back(transposed.indices[b], transposed.data[b] * weight);
-            }
-            std::sort(applied.begin(), applied.end(),
-                      [](const auto& left, const auto& right) { return left.first < right.first; });
-            terms.clear();
-            for (std::size_t i = 0; i < applied.size();) {
-                const int row = applied[i].first;
-                Complex sum{0.0, 0.0};
-                std::size_t j = i;
-                while (j < applied.size() && applied[j].first == row) {
-                    sum += applied[j].second;
-                    ++j;
-                }
-                i = j;
-                if (std::abs(sum) < 1e-14) continue;
-                for (int t = start[row]; t < start[row + 1]; ++t)
-                    terms.emplace_back(row_of[t], value_of[t] * sum);
-            }
-            std::sort(terms.begin(), terms.end(),
-                      [](const auto& left, const auto& right) { return left.first < right.first; });
-            std::vector<std::pair<int, Complex>>& column = produced[c];
-            for (std::size_t i = 0; i < terms.size();) {
-                const int row = terms[i].first;
-                Complex sum{0.0, 0.0};
-                std::size_t j = i;
-                while (j < terms.size() && terms[j].first == row) {
-                    sum += terms[j].second;
-                    ++j;
-                }
-                i = j;
-                if (std::abs(sum) < 1e-14) continue;
-                column.emplace_back(row, sum);
-            }
-        }
-    }, threads);
-
-    for (int c = 0; c < m; ++c) {
-        for (const auto& entry : produced[c]) {
-            by_column.indices.push_back(entry.first);
-            by_column.data.push_back(entry.second);
-        }
-        by_column.indptr[c + 1] = static_cast<int>(by_column.indices.size());
-    }
-    return transpose(by_column);
-}
 
 
 }  // namespace ed
@@ -768,6 +593,66 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
     SparseMatrix out;
     out.rows = dim;
     out.cols = dim;
+    out.indptr.assign(static_cast<std::size_t>(dim) + 1, 0);
+    for (int index = 0; index < dim; ++index) {
+        for (const auto& entry : produced[index]) {
+            out.indices.push_back(entry.first);
+            out.data.push_back(entry.second);
+        }
+        out.indptr[index + 1] = static_cast<int>(out.indices.size());
+    }
+    return transpose(out);
+}
+
+SparseMatrix sector_basis(const Basis& basis, const SectorMap& sector,
+                          const std::vector<Complex>& characters,
+                          const SectorVectors& vectors, int threads)
+{
+    const int n = basis.size();
+    const int dim = vectors.vectors();
+    const int orbits = sector.orbits;
+
+    // the weight of a state in its momentum column
+    std::vector<Complex> weight(static_cast<std::size_t>(n), Complex{0.0, 0.0});
+    std::vector<double> scale(static_cast<std::size_t>(orbits), 1.0);
+    for (int label = 0; label < orbits; ++label)
+        scale[static_cast<std::size_t>(label)] =
+            1.0 / std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
+    for (int label = 0; label < orbits; ++label)
+        for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
+            const int state = sector.states[s];
+            weight[static_cast<std::size_t>(state)] =
+                std::conj(characters[sector.translation[state]])
+                * scale[static_cast<std::size_t>(label)];
+        }
+
+    // one list per adapted vector: the coefficients on the orbits, times the weight
+    // every state of an orbit carries
+    std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(dim));
+    parallel_ranges(dim, [&](int begin, int end) {
+        for (int index = begin; index < end; ++index) {
+            std::vector<std::pair<int, Complex>>& column = produced[index];
+            for (int at = vectors.start[index]; at < vectors.start[index + 1]; ++at) {
+                const int label = vectors.columns[at];
+                if (label < 0) continue;
+                const Complex coefficient = vectors.data[at];
+                for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
+                    const int state = sector.states[s];
+                    const Complex amplitude = coefficient * weight[static_cast<std::size_t>(state)];
+                    if (std::abs(amplitude) <= 1e-14) continue;
+                    column.emplace_back(state, amplitude);
+                }
+            }
+            std::sort(column.begin(), column.end(),
+                      [](const auto& left, const auto& right) { return left.first < right.first; });
+        }
+    }, threads);
+
+    // the lists are per adapted vector, so what is built here is the transpose of
+    // what the caller wants; the transpose at the end puts the states in the rows
+    SparseMatrix out;
+    out.rows = dim;
+    out.cols = n;
     out.indptr.assign(static_cast<std::size_t>(dim) + 1, 0);
     for (int index = 0; index < dim; ++index) {
         for (const auto& entry : produced[index]) {

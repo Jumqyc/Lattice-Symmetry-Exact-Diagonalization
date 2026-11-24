@@ -256,16 +256,17 @@ def _compose(first, second, count: int) -> '_edkern.PhasedPermutation':
     return _edkern.PhasedPermutation(act, phase)
 
 
-def _little_group(model: 'Model', columns, basis, k: tuple[int, ...], threads: int):
+def _little_group(model: 'Model', sector, basis, k, characters, translations):
     '''
-    The little group of one momentum, as actions on the sector's columns.
+    The little group of one momentum, acting on the orbit labels.
 
     Args:
         model: the model.
-        columns: the momentum basis of *k*.
+        sector: the orbit labels of the momentum sector.
         basis: the computational basis.
         k: the momentum label.
-        threads: workers for the actions.
+        characters: the character of the momentum at every translation.
+        translations: the translations as kernel actions.
     Returns:
         ``(actions, irreps)``: one action per little-group element -- the identity
         alone when the group is trivial -- and one entry per irrep of it, as
@@ -274,10 +275,10 @@ def _little_group(model: 'Model', columns, basis, k: tuple[int, ...], threads: i
     little, _ = model.little_group(k)
     ops = list(little)
     if len(ops) == 1:
-        return [_identity_permutation(columns.columns())], [('A', 1, [1.0 + 0.0j])]
-    actions = [_edkern.sector_action(
-        columns, basis, monomial_of(model, model.hilbert[hilbert_index(model, op)]))
-        for op in ops]
+        return ([_identity_permutation(sector.orbits)], [('A', 1, [1.0 + 0.0j])])
+    actions = [_edkern.action_on_orbits(
+        basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]),
+        characters, translations) for op in ops]
     irreps = [(alpha, little.irrep_dim(alpha),
                [little.character(alpha, op) for op in ops]) for alpha in little.all_irrps()]
     return actions, irreps
@@ -289,15 +290,15 @@ def _isotypic(actions: list, characters: list, flip, parity, dim: int, count: in
     The adapted vectors of one sector, with the spin flip folded in when asked.
 
     Args:
-        actions: the little-group actions on the sector's columns.
+        actions: the little-group actions on the orbit labels.
         characters: their characters in the irrep.
-        flip: the spin flip acting on the columns, or None.
+        flip: the spin flip acting on the labels, or None.
         parity: the eigenvalue of the spin flip, or None.
         dim: dimension of the irrep.
-        count: number of columns of the sector.
+        count: number of orbits in the sector.
         threads: workers for the projection.
     Returns:
-        The orthonormal adapted vectors.
+        The orthonormal adapted vectors, one entry per orbit.
     '''
     if parity is None:
         return _edkern.isotypic_basis(actions, characters, dim, count, threads)
@@ -309,50 +310,47 @@ def _isotypic(actions: list, characters: list, flip, parity, dim: int, count: in
     return _edkern.isotypic_basis(both, both_characters, dim, count, threads)
 
 
-def _momentum_pieces(model: 'Model', basis, terms, translations, spin, spin_flip: bool,
-                     threads: int):
+def _sector_pieces(model: 'Model', basis, orbits, spin, spin_flip: bool, threads: int):
     '''
-    One momentum at a time: its columns, its Hamiltonian and its sectors.
+    One sector at a time: its labels, its character and its adapted vectors.
 
     Args:
         model: the model.
         basis: the computational basis.
-        terms: the couplings in the kernel's representation.
-        translations: the translations as kernel actions.
+        orbits: the orbit labels of the whole basis, from ``sector_map``.
         spin: the spin flip as a kernel action, or None.
         spin_flip: whether the spin flip is resolved.
-        threads: workers for the kernels.
+        threads: workers for the projection.
     Yields:
-        ``(columns, sector, pieces)``, where *pieces* is a list of
-        ``((k, alpha, s), vectors)``.
+        ``((k, alpha, s), sector, characters, vectors)``.
     '''
+    translations = globals()["translations"](model)
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters, threads)
-        count = columns.columns()
-        if count == 0:
+        # the orbits whose column is empty for this momentum are dropped, the same
+        # way the momentum basis drops them
+        sector = _edkern.sector_subset(orbits, characters)
+        if sector.orbits == 0:
             continue
-        sector = _edkern.sector_hamiltonian(basis, terms, columns, threads)
-        actions, irreps = _little_group(model, columns, basis, k, threads)
-        flip = (_edkern.sector_action(columns, basis, spin) if spin_flip else None)
-        pieces = []
+        actions, irreps = _little_group(model, sector, basis, k, characters, translations)
+        flip = (_edkern.action_on_orbits(basis, sector, spin, characters, translations)
+                if spin_flip else None)
         for alpha, dim, chars in irreps:
             for parity in ((None,) if not spin_flip else (1, -1)):
-                vectors = _isotypic(actions, chars, flip, parity, dim, count, threads)
+                vectors = _isotypic(actions, chars, flip, parity, dim, sector.orbits, threads)
                 if vectors.vectors() == 0:
                     continue
-                pieces.append(((k, alpha, parity), vectors))
-        yield columns, sector, pieces
+                yield (k, alpha, parity), sector, characters, vectors
 
 
 def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
             spin_flip: bool = False, threads: int = 0) -> dict:
     '''
-    The lowest levels of every sector, one momentum at a time.
+    The lowest levels of every sector.
 
-    Nothing but the eigenvalues is kept: the columns, the sector Hamiltonian and the
-    block are built for one momentum, solved, and dropped before the next one
-    starts.
+    Each sector's block is built directly from its character -- no momentum basis
+    and no momentum-space Hamiltonian -- and diagonalized while the next sector
+    waits, so the memory does not grow with the number of sectors.
 
     Args:
         model: the model.
@@ -366,32 +364,26 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     require()
     basis = basis_of(model, sztot)
     terms = coupling_terms(model)
-    translations = globals()["translations"](model)
+    orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
-    for _, sector, pieces in _momentum_pieces(model, basis, terms, translations, spin,
-                                              spin_flip, threads):
-        for key, vectors in pieces:
-            block = _edkern.block_matrix(sector, vectors, threads)
-            asked = min(count, vectors.vectors())
-            # a degenerate level needs one vector per copy, and the copies are
-            # resolved one cycle at a time, so the budget grows with the request
-            out[key] = np.asarray(
-                _edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
+    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
+                                                           spin_flip, threads):
+        block = _edkern.sector_block(basis, terms, sector, characters, vectors, threads)
+        asked = min(count, vectors.vectors())
+        # a degenerate level needs one vector per copy, and the copies are resolved
+        # one cycle at a time, so the budget grows with the request
+        out[key] = np.asarray(_edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
     return out
 
 
 def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
                  spin_flip: bool = False, threads: int = 0) -> dict:
     '''
-    The lowest levels of every sector, without forming a matrix.
+    The lowest levels of every sector, without forming a block.
 
-    No momentum basis, no sector Hamiltonian and no block is built: the states are
-    labelled by their translation orbit once, the little group acts on those labels,
-    and the Hamiltonian of a sector is applied to vectors by expanding them onto the
-    orbits, applying the terms and projecting back.  The price is that the product
-    is paid at every step of the recurrence instead of being read from a matrix,
-    which is what a lattice too large for the matrix can afford.
+    The same walk as :func:`spectra`, but the product is applied to vectors instead
+    of being written down: what remains in memory is the vector alone.
 
     Args:
         model: the model.
@@ -405,49 +397,22 @@ def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     require()
     basis = basis_of(model, sztot)
     terms = coupling_terms(model)
-    translations = globals()["translations"](model)
-    orbits = _edkern.sector_map(basis, translations)
+    orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
-    budget = max(200, 40 * count)
     out = {}
-    for k in model.tr_group.all_momenta():
-        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        # the orbits whose column is empty for this momentum are dropped, the same
-        # way the momentum basis drops them
-        sector = _edkern.sector_subset(orbits, characters)
-        if sector.orbits == 0:
-            continue
-        little, _ = model.little_group(k)
-        ops = list(little)
-        if len(ops) == 1:
-            actions = [_identity_permutation(sector.orbits)]
-            irreps = [('A', 1, [1.0 + 0.0j])]
-        else:
-            actions = [_edkern.action_on_orbits(
-                basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]),
-                characters, translations) for op in ops]
-            irreps = [(alpha, little.irrep_dim(alpha),
-                       [little.character(alpha, op) for op in ops])
-                      for alpha in little.all_irrps()]
-        flip = (_edkern.action_on_orbits(basis, sector, spin, characters, translations)
-                if spin_flip else None)
-        for alpha, dim, chars in irreps:
-            for parity in ((None,) if not spin_flip else (1, -1)):
-                vectors = _isotypic(actions, chars, flip, parity, dim, sector.orbits, threads)
-                if vectors.vectors() == 0:
-                    continue
-                ask = min(count, vectors.vectors())
-                out[(k, alpha, parity)] = np.asarray(_edkern.lowest_eigenvalues_free(
-                    lambda vector: _edkern.sector_apply_block(
-                        basis, terms, sector, characters, vectors, vector, threads),
-                    vectors.vectors(), ask, max(budget, 40 * ask), 1e-10, threads))
+    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
+                                                           spin_flip, threads):
+        asked = min(count, vectors.vectors())
+        out[key] = np.asarray(_edkern.lowest_eigenvalues_free(
+            lambda vector: _edkern.sector_apply_block(basis, terms, sector, characters,
+                                                      vectors, vector, threads),
+            vectors.vectors(), asked, max(200, 40 * asked), 1e-10, threads))
     return out
 
 
-def sectors(model: 'Model', sztot: Optional[int] = None,
-            spin_flip: bool = False) -> dict:
+def sectors(model: 'Model', sztot: Optional[int] = None, spin_flip: bool = False) -> dict:
     '''
-    The whole decomposition, one momentum at a time.
+    The whole decomposition, one sector at a time.
 
     The same walk as :func:`spectra`, except that the adapted vectors are kept
     beside their block and the block is not diagonalized.
@@ -464,15 +429,13 @@ def sectors(model: 'Model', sztot: Optional[int] = None,
     require()
     basis = basis_of(model, sztot)
     terms = coupling_terms(model)
-    translations = globals()["translations"](model)
+    orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     threads = _threads()
     out = {}
-    for columns, sector, pieces in _momentum_pieces(model, basis, terms, translations,
-                                                    spin, spin_flip, threads):
-        for key, vectors in pieces:
-            block = to_scipy(_edkern.block_matrix(sector, vectors, threads))
-            adapted = (columns_to_scipy(columns, basis.size())
-                       @ vectors_to_scipy(vectors, columns.columns()))
-            out[key] = (adapted.tocsr(), block.tocsr())
+    for key, sector, characters, vectors in _sector_pieces(model, basis, orbits, spin,
+                                                           spin_flip, threads):
+        block = to_scipy(_edkern.sector_block(basis, terms, sector, characters, vectors, threads))
+        adapted = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors, threads))
+        out[key] = (adapted.tocsr(), block.tocsr())
     return out

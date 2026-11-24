@@ -77,35 +77,9 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
 
 
 
-/**
- * @param basis the computational basis.
- * @param couplings the terms of the Hamiltonian.
- * @param columns the momentum-adapted basis.
- * @param threads how many workers to use; 0 means one per hardware thread.
- * @detail ``B^T H B`` with the Hamiltonian applied term by term: ``H B`` is
- *         accumulated column by column from the images the terms produce, so the
- *         Hamiltonian never exists as a matrix.  The cost is
- *         ``#states * #terms`` per sector; the memory is the size of the basis,
- *         which is what makes a five-by-five lattice possible at all.
- * @short The Hamiltonian in the momentum-adapted basis.
- */
-SparseMatrix sector_hamiltonian(const Basis& basis, const std::vector<CouplingTerm>& couplings,
-                                const SparseColumns& columns, int threads = 0);
 
-/**
- * @param matrix the Hamiltonian of a sector, in the sector basis.
- * @param vectors an orthonormal set of sector vectors.
- * @param threads how many workers to use; 0 means one per hardware thread.
- * @detail ``V^T H V`` as a sparse matrix: both factors are sparse, the product
- *         is accumulated column by column, and every vector of *vectors* lives
- *         on one little-group orbit, so the block is as sparse as the sector
- *         Hamiltonian restricted to those orbits.  Nothing of the size of the
- *         sector is allocated on the way.
- * @short The Hamiltonian block in the adapted basis, sparse.
- * @return A CSR matrix of side ``vectors.vectors()``.
- */
-SparseMatrix block_matrix(const SparseMatrix& matrix, const SectorVectors& vectors,
-                          int threads = 0);
+
+
 
 }  // namespace ed
 
@@ -231,6 +205,21 @@ std::vector<Complex> sector_apply_block(const Basis& basis,
  */
 SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& couplings,
                           const SectorMap& sector, const std::vector<Complex>& characters,
+                          const SectorVectors& vectors, int threads = 0);
+
+/**
+ * @param basis the computational basis.
+ * @param sector the orbit labels of the momentum sector.
+ * @param characters the character of the momentum at every translation.
+ * @param vectors the adapted vectors of one sector, as coefficients on the orbits.
+ * @param threads how many workers to use; 0 means one per hardware thread.
+ * @detail The adapted vectors written out in the computational basis, one column
+ *         per vector -- what a caller needs to look at a wavefunction, and the only
+ *         object here of the size of the basis.
+ * @short The adapted vectors of one sector, in the computational basis.
+ */
+SparseMatrix sector_basis(const Basis& basis, const SectorMap& sector,
+                          const std::vector<Complex>& characters,
                           const SectorVectors& vectors, int threads = 0);
 
 }  // namespace ed

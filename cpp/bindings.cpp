@@ -82,10 +82,6 @@ PYBIND11_MODULE(_edkern, m)
     m.def("isotypic_basis", &ed::isotypic_basis,
           py::call_guard<py::gil_scoped_release>(), py::arg("actions"), py::arg("characters"),
           py::arg("dim"), py::arg("column_count"), py::arg("threads") = 0, "Adapted basis of one irrep");
-    m.def("sector_hamiltonian", &ed::sector_hamiltonian,
-          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
-          py::arg("couplings"), py::arg("columns"), py::arg("threads") = 0,
-          "The Hamiltonian in a momentum-adapted basis, term by term");
     py::class_<ed::SectorMap>(m, "SectorMap")
         .def_readonly("representative", &ed::SectorMap::representative,
                       "the packed state of every orbit")
@@ -119,15 +115,16 @@ PYBIND11_MODULE(_edkern, m)
           py::arg("tolerance") = 1e-10, py::arg("threads") = 0,
           "Lowest eigenvalues of an operator given as a product");
 
+    m.def("sector_basis", &ed::sector_basis,
+          py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
+          py::arg("sector"), py::arg("characters"), py::arg("vectors"),
+          py::arg("threads") = 0,
+          "The adapted vectors of one sector, in the computational basis");
     m.def("sector_block", &ed::sector_block,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
           py::arg("couplings"), py::arg("sector"), py::arg("characters"),
           py::arg("vectors"), py::arg("threads") = 0,
           "The block of one sector, built without the sector Hamiltonian");
-    m.def("block_matrix", &ed::block_matrix,
-          py::call_guard<py::gil_scoped_release>(), py::arg("matrix"), py::arg("vectors"),
-          py::arg("threads") = 0,
-          "The block of a sector in a set of adapted vectors, sparse");
     m.def("lowest_eigenvalues",
           py::overload_cast<const ed::SparseMatrix&, int, int, double, int>(&ed::lowest_eigenvalues),
           py::arg("matrix"), py::arg("count"),

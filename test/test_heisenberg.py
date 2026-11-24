@@ -49,27 +49,32 @@ def build_heisenberg_model() -> Model:
     return model
 
 
-def momentum_spectrum(model: Model, sztot=None) -> np.ndarray:
+def momentum_spectrum(model, sztot=None) -> np.ndarray:
     '''
-    The union of the momentum sectors, without the point group.
+    The whole spectrum through the momentum sectors alone.
 
     Args:
         model: the model.
-        sztot: total charge, or None.
+        sztot: total charge, or None for the whole space.
     Returns:
-        The eigenvalues, ascending.
+        The eigenvalues, ascending, with the momentum projection applied and the
+        point group not resolved: every momentum sector is one block.
     '''
     basis = kernel.basis_of(model, sztot)
     terms = kernel.coupling_terms(model)
     translations = kernel.translations(model)
+    orbits = _edkern.sector_map(basis, translations)
     values = []
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
-        if columns.columns() == 0:
+        sector = _edkern.sector_subset(orbits, characters)
+        if sector.orbits == 0:
             continue
-        sector = _edkern.sector_hamiltonian(basis, terms, columns)
-        values.append(np.linalg.eigvalsh(kernel.to_scipy(sector).toarray()))
+        identity = _edkern.PhasedPermutation(list(range(sector.orbits)),
+                                            [1.0 + 0.0j] * sector.orbits)
+        vectors = _edkern.isotypic_basis([identity], [1.0 + 0.0j], 1, sector.orbits)
+        block = _edkern.sector_block(basis, terms, sector, characters, vectors)
+        values.append(np.linalg.eigvalsh(kernel.to_scipy(block).toarray()))
     return np.sort(np.concatenate(values))
 
 

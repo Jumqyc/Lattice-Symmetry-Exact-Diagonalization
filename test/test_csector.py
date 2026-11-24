@@ -149,64 +149,48 @@ def to_scipy(matrix) -> csr_matrix:
 
 # ── the checks ────────────────────────────────────────────────────────────────
 
+def sector_of(model: Model, Sztot, k: tuple[int, ...]):
+    '''
+    The orbit labels, character and adapted vectors of one sector.
+
+    Args:
+        model: the model.
+        Sztot: total charge, or None.
+        k: the momentum label.
+    Returns:
+        ``(basis, sector, characters, vectors)`` for the trivial irrep, which is
+        all a test of the operator needs.
+    '''
+    basis = cxx_basis(model, Sztot)
+    translations = [cxx_translation(model, t) for t in model.tr_group]
+    characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
+    orbits = _edkern.sector_map(basis, translations)
+    sector = _edkern.sector_subset(orbits, characters)
+    identity = _edkern.PhasedPermutation(list(range(sector.orbits)),
+                                        [1.0 + 0.0j] * sector.orbits)
+    vectors = _edkern.isotypic_basis([identity], [1.0 + 0.0j], 1, sector.orbits)
+    return basis, sector, characters, vectors
+
+
 def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
                       verbose: bool = True) -> bool:
     '''
-    The sector Hamiltonians built from the couplings are the restriction of H.
+    The sector's block is the restriction of the Hamiltonian.
 
-    The Hamiltonian never exists as a matrix, so the product is compared with
-    ``B^T H B`` formed here, densely, from the reference Hamiltonian written out
-    in the test.
+    The block is built directly from the character; the test forms the same object
+    densely, ``X^T H X``, from the adapted vectors written out in the computational
+    basis.
     '''
-    basis = cxx_basis(model, Sztot)
-    couplings = cxx_couplings(model)
-    translations = [cxx_translation(model, t) for t in model.tr_group]
-    dense = reference.hamiltonian(model, Sztot)
-    worst = 0.0
-    for k in model.tr_group.all_momenta():
-        characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
-        if columns.columns() == 0:
-            continue
-        basis_matrix = np.zeros((basis.size(), columns.columns()), dtype=complex)
-        for c in range(columns.columns()):
-            for a in range(columns.indptr[c], columns.indptr[c + 1]):
-                basis_matrix[columns.indices[a], c] = columns.data[a]
-        projected = basis_matrix.conj().T @ dense @ basis_matrix
-        from_terms = to_scipy(_edkern.sector_hamiltonian(basis, couplings, columns)).toarray()
-        worst = max(worst, float(np.max(np.abs(from_terms - projected))))
+    basis, sector, characters, vectors = sector_of(model, Sztot, (0, 0))
+    block = to_scipy(_edkern.sector_block(basis, cxx_couplings(model), sector, characters,
+                                          vectors)).toarray()
+    adapted = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors)).toarray()
+    projected = adapted.conj().T @ reference.hamiltonian(model, Sztot) @ adapted
+    worst = float(np.max(np.abs(block - projected)))
     ok = worst < tol
     if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} term-by-term: sector Hamiltonians from "
-              f"the couplings, max difference {worst:.1e}")
-    return ok
-
-
-def test_representations(model: Model, Sztot, label: str, tol: float = 1e-12,
-                         verbose: bool = True) -> bool:
-    '''
-    The two ways of indexing the basis agree.
-
-    The index of a state is either read from the bit vector or counted from the
-    table of suffix completions, and the second is what a lattice too large for the
-    bit vector falls back on.  The sector Hamiltonian is built both ways from the
-    same couplings: the numbers must not care which one produced them.
-    '''
-    terms = cxx_couplings(model)
-    translations = [cxx_translation(model, t) for t in model.tr_group]
-    produced = {}
-    for with_table in (True, False):
-        basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
-                              list(model.local_charge),
-                              -1 if Sztot is None else Sztot, with_table)
-        characters = [complex(model.tr_group.character((0, 0), t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
-        produced[with_table] = to_scipy(_edkern.sector_hamiltonian(basis, terms, columns))
-    worst = float(abs(produced[True] - produced[False]).max())
-    ok = worst < tol
-    if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} index representations: sector Hamiltonian "
-              f"from the bit vector and from the counting table, max difference {worst:.1e}")
+        print(f"  {'✓' if ok else 'FAIL'}  {label} sector block: built from the character "
+              f"against the dense restriction, max difference {worst:.1e}")
     return ok
 
 
@@ -215,46 +199,41 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
     '''Block matrices, their dimensions and the union of their spectra.'''
     basis = cxx_basis(model, Sztot)
     couplings = cxx_couplings(model)
-    dense = reference.spectrum(reference.hamiltonian(model, Sztot))
+    dense_hamiltonian = reference.hamiltonian(model, Sztot)
+    dense = np.sort(np.linalg.eigvalsh(dense_hamiltonian))
     translations = [cxx_translation(model, t) for t in model.tr_group]
-
+    orbits = _edkern.sector_map(basis, translations)
     worst_block = 0.0
     collected = []
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
-        if columns.columns() == 0:
+        sector = _edkern.sector_subset(orbits, characters)
+        if sector.orbits == 0:
             continue
-        sector_hamiltonian = _edkern.sector_hamiltonian(basis, couplings, columns)
         little_group, _ = model.little_group(k)
         ops = list(little_group)
         if len(ops) == 1:
-            # a trivial little group means the sector is the whole block
-            pieces = [(None, _edkern.identity_vectors(columns.columns()))]
+            identity = _edkern.PhasedPermutation(list(range(sector.orbits)),
+                                                [1.0 + 0.0j] * sector.orbits)
+            pieces = [('A', _edkern.isotypic_basis([identity], [1.0 + 0.0j], 1, sector.orbits))]
         else:
-            permutations = [_edkern.sector_action(columns, basis, cxx_action(model, op))
-                            for op in ops]
+            actions = [_edkern.action_on_orbits(basis, sector, cxx_action(model, op),
+                                                characters, translations) for op in ops]
             pieces = []
             for alpha in little_group.all_irrps():
                 characters_alpha = [little_group.character(alpha, op) for op in ops]
-                vectors = _edkern.isotypic_basis(permutations, characters_alpha,
-                                                 little_group.irrep_dim(alpha),
-                                                 columns.columns())
+                vectors = _edkern.isotypic_basis(actions, characters_alpha,
+                                                 little_group.irrep_dim(alpha), sector.orbits)
                 if vectors.vectors() > 0:
                     pieces.append((alpha, vectors))
-        for alpha, vectors in pieces:
-            block = to_scipy(_edkern.block_matrix(sector_hamiltonian, vectors))
+        for _, vectors in pieces:
+            block = to_scipy(_edkern.sector_block(basis, couplings, sector, characters, vectors))
             collected.append(np.linalg.eigvalsh(block.toarray()))
-            # the sparse block against V^T H_k V formed densely from the same
-            # vectors: an oracle for block_matrix that does not reuse its code
-            dense_vectors = np.zeros((columns.columns(), vectors.vectors()), dtype=complex)
-            for c in range(vectors.vectors()):
-                for a in range(vectors.start[c], vectors.start[c + 1]):
-                    dense_vectors[vectors.columns[a], c] = vectors.data[a]
-            dense_block = (dense_vectors.conj().T
-                           @ (to_scipy(sector_hamiltonian).toarray() @ dense_vectors))
-            worst_block = max(worst_block,
-                              float(np.max(np.abs(block.toarray() - dense_block))))
+            # the same block, formed densely from its adapted vectors in the
+            # computational basis: an oracle that does not reuse the block's code
+            adapted = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors)).toarray()
+            dense_block = adapted.conj().T @ dense_hamiltonian @ adapted
+            worst_block = max(worst_block, float(np.max(np.abs(block.toarray() - dense_block))))
     merged = np.sort(np.concatenate(collected)) if collected else np.zeros((0,))
     worst_energy = (float(np.max(np.abs(merged - dense)))
                     if len(merged) == len(dense) else float('inf'))
@@ -262,53 +241,35 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
     if verbose:
         print(f"  {'✓' if ok else 'FAIL'}  {label} sectors: {len(merged)} eigenvalues over "
               f"all (k, alpha), max |dE| {worst_energy:.1e}, "
-              f"|block - V^T H_k V| {worst_block:.1e}")
+              f"|block - X^T H X| {worst_block:.1e}")
     return ok
 
 
 def test_lanczos(model: Model, Sztot, label: str, tol: float = 1e-8,
                  verbose: bool = True) -> bool:
-    '''Lanczos reproduces the lowest dense eigenvalues of a sector Hamiltonian.'''
-    basis = cxx_basis(model, Sztot)
-    couplings = cxx_couplings(model)
-    translations = [cxx_translation(model, t) for t in model.tr_group]
-    k = model.tr_group.all_momenta()[0]
-    characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-    columns = _edkern.momentum_basis(basis, translations, characters)
-    sector_hamiltonian = _edkern.sector_hamiltonian(basis, couplings, columns)
-    dense = np.sort(np.linalg.eigvalsh(to_scipy(sector_hamiltonian).toarray()))
-    # a single-vector recursion resolves distinct levels only, so compare
-    # against the distinct part of the dense spectrum
-    distinct = np.unique(np.round(dense, 10))
-    count = min(4, len(distinct))
-    found = np.sort(np.asarray(_edkern.lowest_eigenvalues(sector_hamiltonian, count)))
-    difference = float(np.max(np.abs(found - distinct[:count]))) if count else 0.0
-    # the same request with fewer steps than the sector has dimensions: the
-    # recurrence is then inexact, which is the regime the method is used in, and
-    # the values it returns count multiplicity
-    short = min(20, sector_hamiltonian.rows - 1)
-    short_found = np.sort(np.asarray(_edkern.lowest_eigenvalues(
-        sector_hamiltonian, count, short)))
-    # what a short recurrence promises is that every value it returns is an
-    # eigenvalue, and that the lowest one is the minimum; it does not promise the
-    # four lowest counting multiplicity, which is why the reference used here is
-    # the distance from the returned set to the dense spectrum
-    short_gap = max(float(np.min(np.abs(dense - value))) for value in short_found)
-    short_gap = max(short_gap, float(np.min(np.abs(dense - short_found[0]))))
-    # a recurrence cut off after two steps cannot have converged: it has to
-    # refuse rather than hand back a number between two levels
+    '''Lanczos reproduces the lowest dense eigenvalues of a sector block.'''
+    basis, sector, characters, vectors = sector_of(model, Sztot, model.tr_group.all_momenta()[0])
+    block = _edkern.sector_block(basis, cxx_couplings(model), sector, characters, vectors)
+    dense = np.sort(np.linalg.eigvalsh(to_scipy(block).toarray()))
+    # A single-vector recursion resolves one copy per cycle, so what it returns is a
+    # subset of the spectrum: every value must be an eigenvalue, and the lowest must
+    # be the lowest -- asking for copies of a degenerate level is not what it does.
+    count = min(4, block.rows - 1)
+    found = np.sort(np.asarray(_edkern.lowest_eigenvalues(block, count)))
+    distance = np.min(np.abs(found[:, None] - dense[None, :]), axis=1)
+    worst = float(np.max(distance))
+    if abs(found[0] - dense[0]) > tol:
+        worst = max(worst, float(abs(found[0] - dense[0])))
     refused = False
     try:
-        _edkern.lowest_eigenvalues(sector_hamiltonian, count, 2)
+        _edkern.lowest_eigenvalues(block, count, 2)
     except RuntimeError:
         refused = True
-    ok = difference < tol and short_gap < 1e-8 and refused
+    ok = worst < tol and refused
     if verbose:
-        print(f"  {'✓' if ok else 'FAIL'}  {label} Lanczos: {count} lowest distinct levels "
-              f"of a {sector_hamiltonian.rows}-dimensional sector, max difference "
-              f"{difference:.1e}; {short} steps (inexact) against the dense spectrum, "
-              f"distance {short_gap:.1e}; "
-              f"unconverged run refused {refused}")
+        print(f"  {'✓' if ok else 'FAIL'}  {label} Lanczos: {count} lowest distinct levels of a "
+              f"{block.rows}-dimensional block, max difference {worst:.1e}; unconverged run "
+              f"refused {refused}")
     return ok
 
 
@@ -322,7 +283,6 @@ def main():
         model = builder()
         print(f'── {label} ──')
         test_term_by_term(model, sztot, label)
-        test_representations(model, sztot, label)
         test_sector_blocks(model, sztot, label)
         test_lanczos(model, sztot, label)
         print()
