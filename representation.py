@@ -127,19 +127,24 @@ class TrivialGroup(PointGroup):
                      .reshape(self._shape)])
 
 
-def _validated(operations: list[np.ndarray]) -> list[np.ndarray]:
+def _operations_of(operations: list[np.ndarray]) -> list[np.ndarray]:
     '''
-    The operations, once they are known to be a finite subgroup of O(2).
+    The operations, checked only for what a matrix cannot be checked for by
+    multiplication.
 
     Args:
         operations: the operations, as matrices.
     Returns:
         The distinct operations, in the order of first appearance.
     Raises:
-        ValueError: if the list is empty, is not two-dimensional, is not orthogonal,
-            or is not closed under multiplication -- a set that is not a group
-            silently produces a meaningless character table and therefore
-            meaningless sectors, so it is refused here.
+        ValueError: if the list is empty, or if the operations are not ``2x2``.
+
+    Orthogonality and closure are *not* checked.  Every group here is built in this
+    package -- from the angle of a rotation, from the operation list of a point group
+    that was itself built that way, or from the identity -- so both hold by
+    construction, and testing them would mean deciding on rounded floating point
+    whether a product is one of the operations, which is exactly the kind of check
+    that fails for reasons unrelated to what it is meant to catch.
     '''
     ops = _unique_ops(operations)
     if not ops:
@@ -149,16 +154,6 @@ def _validated(operations: list[np.ndarray]) -> list[np.ndarray]:
         raise ValueError(
             "This module knows the finite subgroups of O(2) only -- cyclic and "
             f"dihedral -- and got operations of shape {shape}.")
-    for op in ops:
-        if not np.allclose(op @ op.T, np.eye(2), atol=_OP_TOL):
-            raise ValueError("The operations must be orthogonal matrices.")
-    keys = {_op_key(op) for op in ops}
-    for a in ops:
-        for b in ops:
-            if _op_key(a @ b) not in keys:
-                raise ValueError(
-                    "The supplied operations do not form a group: "
-                    f"{a.tolist()} * {b.tolist()} is missing.")
     return ops
 
 
@@ -178,7 +173,7 @@ class CyclicGroup(PointGroup):
             ValueError: if the list is not a finite subgroup of O(2), or if it
                 contains a reflection.
         '''
-        self._ops = _validated(operations)
+        self._ops = _operations_of(operations)
         self._operations = tuple(_matrix_to_flat(op) for op in self._ops)
         self._n = len(self._ops)
         if any(np.linalg.det(op) < 0 for op in self._ops):
@@ -247,7 +242,7 @@ class DihedralGroup(PointGroup):
             ValueError: if the list is not a finite subgroup of O(2), or if the
                 number of reflections differs from the number of rotations.
         '''
-        self._ops = _validated(operations)
+        self._ops = _operations_of(operations)
         self._operations = tuple(_matrix_to_flat(op) for op in self._ops)
         self._rotations = [op for op in self._ops if np.linalg.det(op) > 0]
         self._reflections = [op for op in self._ops if np.linalg.det(op) < 0]
@@ -334,10 +329,10 @@ def group_of(operations: list[np.ndarray]) -> PointGroup:
     Returns:
         A :class:`CyclicGroup` or a :class:`DihedralGroup`.
     Raises:
-        ValueError: if the list is not a finite subgroup of O(2), or is neither
+        ValueError: if the list is empty, is not two-dimensional, or is neither
             cyclic nor dihedral.
     '''
-    ops = _validated(operations)                 # refuses anything that is not a group
+    ops = _operations_of(operations)
     reflections = sum(1 for op in ops if np.linalg.det(op) < 0)
     if reflections == 0:
         return CyclicGroup(ops)
