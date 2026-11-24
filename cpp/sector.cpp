@@ -51,6 +51,45 @@ std::vector<std::vector<int>> column_orbits(const std::vector<PhasedPermutation>
     return orbits;
 }
 
+/**
+ * @detail The weight of a state in its momentum column is the conjugate character of
+ *         the translation that reaches it, over the square root of its orbit's size.
+ *         That is one number per orbit and one character per state, so keeping the
+ *         weight per state costs six times the memory of the labels for something a
+ *         lookup reproduces.
+ * @short The weight of a state in its momentum column.
+ */
+class ColumnWeights {
+public:
+    /**
+     * @param sector the sector.
+     * @param characters the character of the momentum at every translation.
+     */
+    ColumnWeights(const SectorMap& sector, const std::vector<Complex>& characters)
+        : sector_(sector), characters_(characters),
+          scale_(static_cast<std::size_t>(sector.orbits), 1.0)
+    {
+        for (int label = 0; label < sector.orbits; ++label)
+            scale_[static_cast<std::size_t>(label)] =
+                1.0 / std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
+    }
+
+    /** The scale of one orbit: the square root of its size, inverted. */
+    double scale(int label) const { return scale_[static_cast<std::size_t>(label)]; }
+
+    /** The weight of *state* in the column of its orbit. */
+    Complex of(int state) const
+    {
+        return std::conj(characters_[sector_.translation_of(state)])
+               * scale_[static_cast<std::size_t>(sector_.orbit_of(state))];
+    }
+
+private:
+    const SectorMap& sector_;
+    const std::vector<Complex>& characters_;
+    std::vector<double> scale_;
+};
+
 }  // namespace
 
 
@@ -316,25 +355,19 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
     prepared.reserve(couplings.size());
     for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
 
-    // The row of one orbit: the weight of a state in its momentum column is
-    // ``conj(character)/sqrt(size)``, so the row is a double sum over the orbit's
-    // own states and the images of each of them.  Nothing of the size of the basis
-    // is allocated and no matrix is formed.
+    // The row of one orbit: the row is a double sum over the orbit's own states and
+    // the images of each of them.  Nothing of the size of the basis is allocated and
+    // no matrix is formed.
+    const ColumnWeights weights(sector, characters);
     std::vector<Complex> out(static_cast<std::size_t>(orbits), Complex{0.0, 0.0});
-    std::vector<double> length(static_cast<std::size_t>(orbits), 0.0);
-    for (int label = 0; label < orbits; ++label)
-        length[static_cast<std::size_t>(label)] =
-            std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
     parallel_ranges(orbits, [&](int begin, int end) {
         std::vector<int> digits;
         std::vector<int> prefix;
         std::vector<std::pair<int, Complex>> images;
         for (int label = begin; label < end; ++label) {
-            const double weight_scale = 1.0 / length[static_cast<std::size_t>(label)];
             Complex total{0.0, 0.0};
             for (int at = sector.start[label]; at < sector.start[label + 1]; ++at) {
                 const int state = sector.states[at];
-                const Complex weight = std::conj(characters[sector.translation_of(state)]) * weight_scale;
                 basis.unpack_into(basis.state(state), digits);
                 if (!basis.has_table()) basis.prefix_charges(digits, prefix);
                 Complex inner{0.0, 0.0};
@@ -342,18 +375,14 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
                     images.clear();
                     apply_prepared(basis, term, basis.state(state), digits, prefix, state, images);
                     for (const auto& entry : images) {
-                        const int target = entry.first;
-                        const int other = sector.orbit_of(target);
+                        const int other = sector.orbit_of(entry.first);
                         if (other < 0) continue;      // that column is empty for this momentum
-                        const Complex column = std::conj(characters[sector.translation_of(target)])
-                                               / length[static_cast<std::size_t>(other)];
-                        // H[s, s'] times the column weight B[s', O'] and the
-                        // entry of the vector on that orbit (the phase of the row
-                        // is applied once, outside)
-                        inner += entry.second * column * vector[other];
+                        // H[s, s'] times the column weight and the entry of the vector
+                        // on that orbit (the phase of the row is applied once, below)
+                        inner += entry.second * weights.of(entry.first) * vector[other];
                     }
                 }
-                total += std::conj(weight) * inner;
+                total += std::conj(weights.of(state)) * inner;
             }
             out[label] = total;
         }
@@ -474,15 +503,7 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
     prepared.reserve(couplings.size());
     for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
 
-    // The weight of a state in its momentum column is a character over the square
-    // root of the orbit, so the whole of it is one number per orbit -- the state
-    // only selects which character.  Keeping an array per state instead costs six
-    // times the memory of the orbit labels themselves and is touched exactly once
-    // per state of the listing.
-    std::vector<double> scale(static_cast<std::size_t>(orbits), 1.0);
-    for (int label = 0; label < orbits; ++label)
-        scale[static_cast<std::size_t>(label)] =
-            1.0 / std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
+    const ColumnWeights weights(sector, characters);
 
     // The adapted vectors as a listing by orbit: which vectors contain an orbit and
     // with what coefficient.  A state is in a vector exactly when its orbit is, so
@@ -494,7 +515,7 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
             const int label = vectors.columns[at];
             if (label < 0) continue;
             holder[static_cast<std::size_t>(label)].emplace_back(
-                index, std::conj(vectors.data[at]) * scale[static_cast<std::size_t>(label)]);
+                index, std::conj(vectors.data[at]) * weights.scale(label));
         }
 
     // One column of the block at a time: apply the Hamiltonian to the vector and
@@ -517,9 +538,7 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                 const Complex coefficient = vectors.data[at];
                 for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
                     const int state = sector.states[s];
-                    const Complex amplitude =
-                        coefficient * std::conj(characters[sector.translation_of(state)])
-                        * scale[static_cast<std::size_t>(label)];
+                    const Complex amplitude = coefficient * weights.of(state);
                     if (amplitude == Complex{0.0, 0.0}) continue;
                     basis.unpack_into(basis.state(state), digits);
                     if (!basis.has_table()) basis.prefix_charges(digits, prefix);
@@ -575,21 +594,8 @@ SparseMatrix sector_basis(const Basis& basis, const SectorMap& sector,
 {
     const int n = basis.size();
     const int dim = vectors.vectors();
-    const int orbits = sector.orbits;
 
-    // the weight of a state in its momentum column
-    std::vector<Complex> weight(static_cast<std::size_t>(n), Complex{0.0, 0.0});
-    std::vector<double> scale(static_cast<std::size_t>(orbits), 1.0);
-    for (int label = 0; label < orbits; ++label)
-        scale[static_cast<std::size_t>(label)] =
-            1.0 / std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
-    for (int label = 0; label < orbits; ++label)
-        for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
-            const int state = sector.states[s];
-            weight[static_cast<std::size_t>(state)] =
-                std::conj(characters[sector.translation_of(state)])
-                * scale[static_cast<std::size_t>(label)];
-        }
+    const ColumnWeights weights(sector, characters);
 
     // one list per adapted vector: the coefficients on the orbits, times the weight
     // every state of an orbit carries
@@ -603,7 +609,7 @@ SparseMatrix sector_basis(const Basis& basis, const SectorMap& sector,
                 const Complex coefficient = vectors.data[at];
                 for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
                     const int state = sector.states[s];
-                    const Complex amplitude = coefficient * weight[static_cast<std::size_t>(state)];
+                    const Complex amplitude = coefficient * weights.of(state);
                     if (std::abs(amplitude) <= 1e-14) continue;
                     column.emplace_back(state, amplitude);
                 }
