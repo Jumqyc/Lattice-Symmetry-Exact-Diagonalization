@@ -427,23 +427,29 @@ class Model:
                               threads=threads)
 
     def spectra_free(self, Sztot: Optional[int] = None, count: int = 5,
-                     threads: int = 0) -> dict[tuple[int, ...], NDArray[np.float64]]:
+                     spin_flip: bool = False, threads: int = 0
+                     ) -> dict[SectorKey, NDArray[np.float64]]:
         '''
-        Lowest levels of every momentum, without ever forming a matrix.
+        Lowest levels of every sector, without ever forming a block.
+
+        The same sectors as :meth:`spectra`, with the block never written down: the
+        product is expanded onto the sector's orbits, applied term by term, and
+        projected back.  What stays in memory is the vector.
 
         Args:
             Sztot: If given, work in the sector ``sum(state) == Sztot``.
-            count: how many levels per momentum.
+            count: how many levels per sector.
+            spin_flip: If True, also resolve the spin-flip parity.
             threads: workers for the product; 0 means one per core.
         Returns:
-            A dict keyed by the momentum label of the eigenvalues, ascending.
-            The little group is not resolved here: the momentum sector is one
-            block, and the point-group irreps are what `spectra` adds on top.
+            A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
         Raises:
-            ValueError: if the couplings are not closed under the space group.
+            ValueError: if the spin flip is asked for a charge sector it does not
+                preserve, or if the couplings are not closed under the group.
         '''
         self.check_symmetry()
-        return kernel.spectra_free(self, count=count, sztot=Sztot, threads=threads)
+        return kernel.spectra_free(self, count=count, sztot=Sztot, spin_flip=spin_flip,
+                                   threads=threads)
 
     def sector_specs(self, Sztot: Optional[int] = None, spin_flip: bool = False
                      ) -> 'Iterator[SectorSpec]':
