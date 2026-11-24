@@ -174,23 +174,16 @@ def to_scipy(matrix) -> sp.csr_matrix:
 
 # ── the sector decomposition ──────────────────────────────────────────────────
 
-#: How many workers the kernel may use inside one sector; None means one per core,
-#: and the kernels clamp that to the work they have.
-workers: Optional[int] = None
-
-
 def _threads(threads: Optional[int] = None) -> int:
     '''
     The thread count to hand the kernel.
 
     Args:
-        threads: an explicit count, or None to use the module setting.
+        threads: an explicit count, or None for one thread per hardware thread.
     Returns:
         The count, where 0 means one per hardware thread.
     '''
-    if threads is not None:
-        return int(threads)
-    return 0 if workers is None else int(workers)
+    return int(threads or 0)
 
 
 def _identity_permutation(count: int) -> '_edkern.PhasedPermutation':

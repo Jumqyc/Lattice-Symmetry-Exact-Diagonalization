@@ -61,8 +61,8 @@ def fingerprint(model, sztot, spin_flip: bool) -> dict:
         its non-zeros, its trace and Frobenius norm, and the lowest levels from
         ARPACK and from this package's recurrence.
     '''
-    sectors = model.build_sectors(Sztot=sztot, spin_flip=spin_flip)
-    ours = model.spectra(Sztot=sztot, count=LEVELS, spin_flip=spin_flip)
+    sectors = model.build_sectors(sztot=sztot, spin_flip=spin_flip)
+    ours = model.spectra(sztot=sztot, count=LEVELS, spin_flip=spin_flip)
     out = {}
     for key in sorted(sectors, key=str):
         block = sectors[key].hamiltonian

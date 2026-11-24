@@ -162,7 +162,7 @@ class Model:
                 (see ``circle_doublet``) always are.  None means every orbital
                 is a scalar and the operation only permutes sites.
             local_charge: charge of every local basis state, used to select the
-                sector ``sum(charge) == Sztot``; defaults to ``0, 1, ..., d-1``,
+                sector ``sum(charge) == sztot``; defaults to ``0, 1, ..., d-1``,
                 which is the spin or particle number when the local space is a
                 spin degeneracy.
         Raises:
@@ -393,7 +393,7 @@ class Model:
         return MonomialAction(Permutation(np.arange(self.lattice.size_of_unit_cell)),
                               self.species, local)
 
-    def build_sectors(self, Sztot: Optional[int] = None,
+    def build_sectors(self, sztot: Optional[int] = None,
                       spin_flip: bool = False
                       ) -> dict[SectorKey, Sector]:
         '''
@@ -408,7 +408,7 @@ class Model:
         forbidden operations -- is settled here before the kernel is called.
 
         Args:
-            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            sztot: If given, work in the sector ``sum(state) == sztot``.
             spin_flip: If True, also resolve the spin-flip parity
                 ``F: σ_i → d-1-σ_i``.
         Returns:
@@ -420,25 +420,25 @@ class Model:
             ValueError: if *spin_flip* is asked for a charge sector that the
                 spin flip does not map onto itself.
         '''
-        if spin_flip and Sztot is not None and \
-                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
+        if spin_flip and sztot is not None and \
+                2 * sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
             raise ValueError(
-                "The spin flip maps sum(state) == Sztot onto "
-                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
-                "Sztot is self-conjugate.")
+                "The spin flip maps sum(state) == sztot onto "
+                "L(d-1) - sztot; it is a symmetry of a single sector only when "
+                "sztot is self-conjugate.")
         self.check_symmetry()
-        built = kernel.sectors(self, Sztot, spin_flip)
+        built = kernel.sectors(self, sztot, spin_flip)
         return {key: Sector(key=key, basis=basis, hamiltonian=block)
                 for key, (basis, block) in built.items()}
 
-    def spectra(self, Sztot: Optional[int] = None, count: int = 5,
+    def spectra(self, sztot: Optional[int] = None, count: int = 5,
                 spin_flip: bool = False, threads: int = 0, cache: bool = True
                 ) -> dict[SectorKey, NDArray[np.float64]]:
         '''
         Lowest levels of every sector.
 
         Args:
-            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            sztot: If given, work in the sector ``sum(state) == sztot``.
             count: how many levels per sector.
             spin_flip: If True, also resolve the spin-flip parity.
             threads: workers for the kernels; 0 means one per core.
@@ -453,23 +453,23 @@ class Model:
             ValueError: if the spin flip is asked for a charge sector it does not
                 preserve, or if the couplings are not closed under the group.
         '''
-        if spin_flip and Sztot is not None and \
-                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
+        if spin_flip and sztot is not None and \
+                2 * sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
             raise ValueError(
-                "The spin flip maps sum(state) == Sztot onto "
-                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
-                "Sztot is self-conjugate.")
+                "The spin flip maps sum(state) == sztot onto "
+                "L(d-1) - sztot; it is a symmetry of a single sector only when "
+                "sztot is self-conjugate.")
         self.check_symmetry()
-        return kernel.spectra(self, count=count, sztot=Sztot, spin_flip=spin_flip,
+        return kernel.spectra(self, count=count, sztot=sztot, spin_flip=spin_flip,
                               threads=threads, cache=cache)
 
-    def sector_specs(self, Sztot: Optional[int] = None, spin_flip: bool = False
+    def sector_specs(self, sztot: Optional[int] = None, spin_flip: bool = False
                      ) -> 'Iterator[SectorSpec]':
         '''
         Every sector of the charge sector, with the character of the whole group.
 
         Args:
-            Sztot: If given, work in the sector ``sum(state) == Sztot``.
+            sztot: If given, work in the sector ``sum(state) == sztot``.
             spin_flip: if True, each sector is split by the parity of the spin flip,
                 which commutes with the whole group.
         Yields:
@@ -481,12 +481,12 @@ class Model:
             ValueError: if *spin_flip* is asked for a charge sector the spin flip
                 does not preserve.
         '''
-        if spin_flip and Sztot is not None and \
-                2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
+        if spin_flip and sztot is not None and \
+                2 * sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
             raise ValueError(
-                "The spin flip maps sum(state) == Sztot onto "
-                "L(d-1) - Sztot; it is a symmetry of a single sector only when "
-                "Sztot is self-conjugate.")
+                "The spin flip maps sum(state) == sztot onto "
+                "L(d-1) - sztot; it is a symmetry of a single sector only when "
+                "sztot is self-conjugate.")
         characters = self.sector_characters(one_per_star=False)
         for (k, alpha), (dim, full) in characters.items():
             little, cosets = self.little_group(k)

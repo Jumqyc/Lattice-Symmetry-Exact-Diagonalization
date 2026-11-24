@@ -105,11 +105,11 @@ def cxx_action(model: Model, op) -> '_edkern.MonomialAction':
     return _edkern.MonomialAction(action.site.perm.astype(int).tolist(), perm, phase)
 
 
-def test_basis(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
+def test_basis(model: Model, sztot, label: str, verbose: bool = True) -> bool:
     '''The enumerated basis is the one itertools writes down.'''
-    states = reference.basis_states(model, Sztot)
+    states = reference.basis_states(model, sztot)
     basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
-                          list(model.local_charge), -1 if Sztot is None else Sztot)
+                          list(model.local_charge), -1 if sztot is None else sztot)
     same_size = basis.size() == len(states)
     same_states = same_size and all(
         tuple(basis.unpack(basis.state(i))) == states[i] for i in range(basis.size()))
@@ -122,11 +122,11 @@ def test_basis(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
     return ok
 
 
-def test_action(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
+def test_action(model: Model, sztot, label: str, verbose: bool = True) -> bool:
     '''Every group element acts as in Python, phase included.'''
-    states = reference.basis_states(model, Sztot)
+    states = reference.basis_states(model, sztot)
     basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
-                          list(model.local_charge), -1 if Sztot is None else Sztot)
+                          list(model.local_charge), -1 if sztot is None else sztot)
     worst = 0.0
     ok = True
     index_of = {state: row for row, state in enumerate(states)}
@@ -152,7 +152,7 @@ def to_scipy(matrix):
                          shape=(matrix.rows, matrix.cols))
 
 
-def test_momentum(model: Model, Sztot, label: str, tol: float = 1e-10,
+def test_momentum(model: Model, sztot, label: str, tol: float = 1e-10,
                   verbose: bool = True) -> bool:
     '''
     The momentum basis is orthonormal, translation-diagonal and complete.
@@ -163,7 +163,7 @@ def test_momentum(model: Model, Sztot, label: str, tol: float = 1e-10,
     and none of them can be satisfied by accident.
     '''
     basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
-                          list(model.local_charge), -1 if Sztot is None else Sztot)
+                          list(model.local_charge), -1 if sztot is None else sztot)
     translations = [translation_action(model, t) for t in model.tr_group]
     orbits = _edkern.sector_map(basis, translations)
     norm_error = 0.0

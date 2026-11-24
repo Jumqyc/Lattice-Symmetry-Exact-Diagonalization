@@ -61,10 +61,10 @@ def heisenberg(N, point_group, a1=A1, a2=A2) -> Model:
 
 # ── conversions from the Python model to the kernel's plain arrays ────────────
 
-def cxx_basis(model: Model, Sztot) -> '_edkern.Basis':
+def cxx_basis(model: Model, sztot) -> '_edkern.Basis':
     '''The basis of the model in the kernel's representation.'''
     return _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
-                         list(model.local_charge), -1 if Sztot is None else Sztot)
+                         list(model.local_charge), -1 if sztot is None else sztot)
 
 
 def cxx_couplings(model: Model) -> list:
@@ -148,19 +148,19 @@ def to_scipy(matrix) -> csr_matrix:
 
 # ── the checks ────────────────────────────────────────────────────────────────
 
-def sector_of(model: Model, Sztot, k: tuple[int, ...]):
+def sector_of(model: Model, sztot, k: tuple[int, ...]):
     '''
     The orbit labels, character and adapted vectors of one sector.
 
     Args:
         model: the model.
-        Sztot: total charge, or None.
+        sztot: total charge, or None.
         k: the momentum label.
     Returns:
         ``(basis, sector, characters, vectors)`` for the trivial irrep, which is
         all a test of the operator needs.
     '''
-    basis = cxx_basis(model, Sztot)
+    basis = cxx_basis(model, sztot)
     translations = [cxx_translation(model, t) for t in model.tr_group]
     characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
     orbits = _edkern.sector_map(basis, translations)
@@ -171,7 +171,7 @@ def sector_of(model: Model, Sztot, k: tuple[int, ...]):
     return basis, sector, characters, vectors
 
 
-def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
+def test_term_by_term(model: Model, sztot, label: str, tol: float = 1e-10,
                       verbose: bool = True) -> bool:
     '''
     The sector's block is the restriction of the Hamiltonian.
@@ -180,11 +180,11 @@ def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
     densely, ``X^T H X``, from the adapted vectors written out in the computational
     basis.
     '''
-    basis, sector, characters, vectors = sector_of(model, Sztot, (0, 0))
+    basis, sector, characters, vectors = sector_of(model, sztot, (0, 0))
     block = to_scipy(_edkern.sector_block(basis, cxx_couplings(model), sector, characters,
                                           vectors)).toarray()
     adapted = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors)).toarray()
-    projected = adapted.conj().T @ reference.hamiltonian(model, Sztot) @ adapted
+    projected = adapted.conj().T @ reference.hamiltonian(model, sztot) @ adapted
     worst = float(np.max(np.abs(block - projected)))
     ok = worst < tol
     if verbose:
@@ -193,12 +193,12 @@ def test_term_by_term(model: Model, Sztot, label: str, tol: float = 1e-10,
     return ok
 
 
-def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
+def test_sector_blocks(model: Model, sztot, label: str, tol: float = 1e-9,
                        verbose: bool = True) -> bool:
     '''Block matrices, their dimensions and the union of their spectra.'''
-    basis = cxx_basis(model, Sztot)
+    basis = cxx_basis(model, sztot)
     couplings = cxx_couplings(model)
-    dense_hamiltonian = reference.hamiltonian(model, Sztot)
+    dense_hamiltonian = reference.hamiltonian(model, sztot)
     dense = np.sort(np.linalg.eigvalsh(dense_hamiltonian))
     translations = [cxx_translation(model, t) for t in model.tr_group]
     orbits = _edkern.sector_map(basis, translations)
@@ -244,10 +244,10 @@ def test_sector_blocks(model: Model, Sztot, label: str, tol: float = 1e-9,
     return ok
 
 
-def test_lanczos(model: Model, Sztot, label: str, tol: float = 1e-8,
+def test_lanczos(model: Model, sztot, label: str, tol: float = 1e-8,
                  verbose: bool = True) -> bool:
     '''Lanczos reproduces the lowest dense eigenvalues of a sector block.'''
-    basis, sector, characters, vectors = sector_of(model, Sztot, model.tr_group.all_momenta()[0])
+    basis, sector, characters, vectors = sector_of(model, sztot, model.tr_group.all_momenta()[0])
     block = _edkern.sector_block(basis, cxx_couplings(model), sector, characters, vectors)
     dense = np.sort(np.linalg.eigvalsh(to_scipy(block).toarray()))
     # A single-vector recursion resolves one copy per cycle, so what it returns is a

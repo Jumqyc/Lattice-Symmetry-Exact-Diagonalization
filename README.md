@@ -37,10 +37,10 @@ are the oracle the sparse results are compared against.
 ## What it computes
 
 ```python
-model.spectra(Sztot=8, count=4)                 # build each sector's block, then solve it
-model.spectra(Sztot=8, count=4, cache=False)    # never build it: apply the product per step
-model.build_sectors(Sztot=8)                    # keep the adapted vectors and the blocks
-for spec in model.sector_specs(Sztot=8):        # one sector with the whole group's character
+model.spectra(sztot=8, count=4)                 # build each sector's block, then solve it
+model.spectra(sztot=8, count=4, cache=False)    # never build it: apply the product per step
+model.build_sectors(sztot=8)                    # keep the adapted vectors and the blocks
+for spec in model.sector_specs(sztot=8):        # one sector with the whole group's character
     ...
 ```
 
