@@ -27,7 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from base import LatticeAction, PointGroup
-from representation import (ExplicitPointGroup, TrivialGroup, _right_coset_representatives,
+from representation import (group_of, TrivialGroup, _right_coset_representatives,
                             _unique_ops)
 
 
@@ -167,7 +167,7 @@ def little_group(point_group: PointGroup, k: tuple[int, ...],
     elif len(preserving) == 1:
         group = TrivialGroup()
     else:
-        group = ExplicitPointGroup(preserving)
+        group = group_of(preserving)
     return group, coset_reps
 
 

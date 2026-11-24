@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import reference  # noqa: E402
 from ed import Coupling, Model  # noqa: E402
-from representation import ExplicitPointGroup, TrivialGroup  # noqa: E402
+from representation import TrivialGroup, group_of  # noqa: E402
 
 twod = importlib.import_module('geometry.2dsym')
 
@@ -58,7 +58,7 @@ def ring(length: int, periodic: bool) -> Model:
     if periodic:
         cells = [(A1, length), (A2, 1)]
         orbitals = {('A', 0): np.array([0.0, 0.0])}
-        point_group = ExplicitPointGroup([np.eye(2), np.diag([-1.0, 1.0])])
+        point_group = group_of([np.eye(2), np.diag([-1.0, 1.0])])
     else:
         cells = [(A1 * length, 1), (A2, 1)]
         orbitals = {('A', i): np.array([float(i), 0.0]) for i in range(length)}

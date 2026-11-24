@@ -42,7 +42,7 @@ import reference
 from ed import Coupling, Model
 from hilbert_action import circle_doublet
 from lattice_action import AffineAction, label_action
-from representation import ExplicitPointGroup, TrivialGroup
+from representation import TrivialGroup, group_of
 
 X = np.array([[0., 1.], [1., 0.]], dtype=complex)
 Y = np.array([[0., -1j], [1j, 0.]], dtype=complex)
@@ -163,7 +163,7 @@ def test_character_tables(tol: float = 1e-10, verbose: bool = True) -> bool:
     for pg in [twod.C2(), twod.C3(), twod.C4(), twod.C6(),
                twod.D3(), twod.D4(), twod.D6()]:
         ops = list(pg)
-        generic = ExplicitPointGroup(ops)
+        generic = group_of(ops)
         named = np.array([[pg.character(a, op) for op in ops] for a in pg.all_irrps()])
         auto = np.array([[generic.character(a, op) for op in ops]
                          for a in generic.all_irrps()])
@@ -326,7 +326,7 @@ def test_rejects_bad_groups(verbose: bool = True) -> bool:
                                                  point_group=twod.D6())),
         ('C3 minus C3^2', lambda: Model(2, [(A1, 3), (A2, 3)],
                                         {('A', 0): np.array([0., 0.])},
-                                        point_group=ExplicitPointGroup(
+                                        point_group=group_of(
                                             [np.eye(2), twod.rotation(2 * np.pi / 3)]))),
     ]
     for label, build in checks:

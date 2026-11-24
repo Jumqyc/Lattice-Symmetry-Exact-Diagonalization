@@ -8,10 +8,10 @@ the lattice and nothing about the Hilbert space.
 Two kinds of group live here:
 
 * :class:`TrivialGroup`, the group with one element;
-* :class:`ExplicitPointGroup`, a group given by its list of operation
-  matrices, with the character table derived from the group's structure.
-  This is what the little groups are built from, since a little group is a
-  generic subgroup and has no dedicated class.
+* :func:`group_of`, which builds the cyclic or dihedral group a list of operations
+  is, and :class:`CyclicGroup` / :class:`DihedralGroup`, which know their own
+  character tables.  This is what the little groups are built from, since a little
+  group is a generic subgroup and has no dedicated class.
 
 Groups with a standard name (C4, D6, ...) live in ``geometry/2dsym.py``
 together with their hand-written tables.
@@ -129,33 +129,17 @@ class TrivialGroup(PointGroup):
 
 class ExplicitPointGroup(PointGroup):
     '''
-    A point group given explicitly by its list of operation matrices.
+    A point group given by its list of operation matrices, of one of the two kinds
+    a finite subgroup of O(2) can be.
 
-    This is the class used for the little groups, which are generic subgroups
-    of the point group and consequently have no dedicated class.  Only the
-    operation list is needed: any finite subgroup of O(2) is cyclic C_n or
-    dihedral D_n, so the irreps follow from the order *n* of the rotation
-    subgroup and from whether the group contains reflections.
+    This class holds only what such a list has in common: it must be orthogonal and
+    closed, and it must be cyclic or dihedral.  Which kind it is, is decided on
+    construction, and the table is left to the kind -- :class:`CyclicGroup` and
+    :class:`DihedralGroup` write their own, because the two have nothing in common
+    but the construction.  A list that is neither is refused here rather than given
+    a table it does not have.
 
-    Irreps
-    ------
-    * C_n: n one-dimensional irreps ``'j0' … 'j{n-1}'`` with
-      ``χ_j(r^m) = exp(2πi j m / n)``.
-    * D_n: ``'A1'``, ``'A2'`` (plus ``'B1'``, ``'B2'`` for even n) and
-      ``(n-1)//2`` two-dimensional irreps ``'E1' …`` with
-      ``χ_{E_j}(r^m) = 2 cos(2π j m / n)`` on rotations and 0 on reflections.
-      A reflection is written ``σ = σ_0 r^m`` with σ_0 the first reflection of
-      the list; its character is ``(-1)^m`` for ``B1`` and ``-(-1)^m`` for
-      ``B2``.
-
-    The operations must form a group.  This is checked on construction, because
-    a set of matrices that is not closed silently produces a meaningless
-    character table and therefore meaningless sectors.
-
-    The table here is the generic one and its labels are the generic ones.  The
-    named groups of ``geometry/2dsym.py`` are explicit groups too, and they
-    override the table so that the irreps carry the labels a user writes down --
-    which is the only difference between them and this class.
+    Use :func:`group_of` to build one from a list.
     '''
 
     def __init__(self, operations: list[np.ndarray]):
@@ -165,8 +149,8 @@ class ExplicitPointGroup(PointGroup):
         shape = ops[0].shape
         if shape != (2, 2):
             raise ValueError(
-                "ExplicitPointGroup knows the irreps of subgroups of O(2) only, "
-                f"got operations of shape {shape}.")
+                "This module knows the finite subgroups of O(2) only -- cyclic and "
+                f"dihedral -- and got operations of shape {shape}.")
         for op in ops:
             if not np.allclose(op @ op.T, np.eye(2), atol=_OP_TOL):
                 raise ValueError("The operations must be orthogonal matrices.")
@@ -190,7 +174,13 @@ class ExplicitPointGroup(PointGroup):
         if len(self._reflections) not in (0, self._n):
             raise ValueError(
                 f"{self._n} rotations and {len(self._reflections)} reflections "
-                "do not form a cyclic or a dihedral group.")
+                "are neither cyclic nor dihedral.")
+
+    @property
+    def order(self) -> int:
+        '''The number of operations, ``n`` for a cyclic group and ``2n`` for a
+        dihedral one.'''
+        return len(self._ops)
 
     def __hash__(self):
         return hash((self._shape, self._operations))
@@ -204,17 +194,7 @@ class ExplicitPointGroup(PointGroup):
     def __iter__(self):
         return iter([op.copy() for op in self._ops])
 
-    # ── irreps ──────────────────────────────────────────────────────────
-
-    def all_irrps(self) -> list[str]:
-        '''Labels of the irreps, see the class docstring.'''
-        if not self._reflections:
-            return [f'j{j}' for j in range(self._n)]
-        labels = ['A1', 'A2']
-        if self._n % 2 == 0:
-            labels += ['B1', 'B2']
-        labels += [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
-        return labels
+    # ── operations ──────────────────────────────────────────────────────
 
     @staticmethod
     def _is_rotation(op: np.ndarray) -> bool:
@@ -223,10 +203,33 @@ class ExplicitPointGroup(PointGroup):
 
     def _rotation_power(self, op: np.ndarray) -> int:
         '''
-        Power m (mod n) such that ``op = rotation(2π/n)^m``.
+        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
+
+        Args:
+            op: a rotation of the group.
+        Returns:
+            The power, as an integer in ``[0, n)``.
         '''
         angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
         return int(round(angle * self._n / (2 * np.pi))) % self._n
+
+    def all_irrps(self) -> list[str]:
+        raise NotImplementedError("the kind of group provides the table")
+
+    def character(self, irrep: str, op: np.ndarray) -> complex:
+        raise NotImplementedError("the kind of group provides the table")
+
+
+class CyclicGroup(ExplicitPointGroup):
+    '''
+    A cyclic group C*n*: *n* rotations, no reflection.
+
+    Its irreps are *n* one-dimensional ones, ``'j0' … 'j{n-1}'``, with
+    ``χ_j(r^m) = exp(2πi j m / n)``.
+    '''
+
+    def all_irrps(self) -> list[str]:
+        return [f'j{j}' for j in range(self._n)]
 
     def character(self, irrep: str, op: np.ndarray) -> complex:
         '''
@@ -234,26 +237,56 @@ class ExplicitPointGroup(PointGroup):
 
         Args:
             irrep: one of the labels returned by ``all_irrps``.
-            op: an operation matrix of the group.
+            op: an operation of the group.
         Returns:
             The character.
         Raises:
             ValueError: if *irrep* is not a label of this group.
         '''
-        arr = np.asarray(op, dtype=float)
         if irrep not in self.all_irrps():
             raise ValueError(f"Unknown irreducible representation: {irrep}")
-        if np.linalg.det(arr) > 0:
+        return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self._n)
+
+
+class DihedralGroup(ExplicitPointGroup):
+    '''
+    A dihedral group D*n*: *n* rotations and *n* reflections.
+
+    Its irreps are ``'A1'``, ``'A2'`` (plus ``'B1'``, ``'B2'`` for even *n*) and the
+    two-dimensional ``'E1' …``, with ``χ_{E_j}(r^m) = 2 cos(2π j m / n)`` on rotations
+    and 0 on reflections.  A reflection is written ``σ = σ_0 r^m`` with σ_0 the first
+    reflection of the list; its character is ``(-1)^m`` for ``B1`` and ``-(-1)^m`` for
+    ``B2``.
+    '''
+
+    def all_irrps(self) -> list[str]:
+        labels = ['A1', 'A2']
+        if self._n % 2 == 0:
+            labels += ['B1', 'B2']
+        return labels + [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
+
+    def character(self, irrep: str, op: np.ndarray) -> complex:
+        '''
+        Character of *irrep* on *op*.
+
+        Args:
+            irrep: one of the labels returned by ``all_irrps``.
+            op: an operation of the group.
+        Returns:
+            The character.
+        Raises:
+            ValueError: if *irrep* is not a label of this group.
+        '''
+        if irrep not in self.all_irrps():
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
+        arr = np.asarray(op, dtype=float)
+        if self._is_rotation(arr):
             m = self._rotation_power(arr)
-            if not self._reflections:
-                return np.exp(2j * np.pi * int(irrep[1:]) * m / self._n)
             if irrep in ('A1', 'A2'):
                 return 1.0
             if irrep in ('B1', 'B2'):
                 return 1.0 if m % 2 == 0 else -1.0
             return 2.0 * np.cos(2 * np.pi * int(irrep[1:]) * m / self._n)
-
-        # reflections:  op = sigma_0 r^m  with sigma_0 the first reflection
         m = self._rotation_power(self._reflections[0] @ arr)
         if irrep == 'A1':
             return 1.0
@@ -264,3 +297,20 @@ class ExplicitPointGroup(PointGroup):
         if irrep == 'B2':
             return -1.0 if m % 2 == 0 else 1.0
         return 0.0
+
+
+def group_of(operations: list[np.ndarray]) -> ExplicitPointGroup:
+    '''
+    The group a list of operations is, as the kind it turns out to be.
+
+    Args:
+        operations: the operations, as matrices.
+    Returns:
+        A :class:`CyclicGroup` or a :class:`DihedralGroup`.
+    Raises:
+        ValueError: if the list is not a group, is not orthogonal, is not
+            two-dimensional, or is neither cyclic nor dihedral.
+    '''
+    probe = ExplicitPointGroup(operations)      # validates and classifies
+    kind = CyclicGroup if not probe._reflections else DihedralGroup
+    return kind(operations)

@@ -37,10 +37,10 @@ class PointGroup(ABC):
 
     Three implementations answer it, and they answer it for different reasons.
     :class:`representation.TrivialGroup` is the default, the group that says the
-    model has no point symmetry.  :class:`representation.ExplicitPointGroup` reads
-    the table off an operation list, which is the only thing possible for the little
-    groups: they are subgroups of the point group at one momentum, so they are not
-    any of the named groups.  The named ones in ``geometry/2dsym.py`` override the
+    model has no point symmetry.  :func:`representation.group_of` reads the table off
+    an operation list, which is the only thing possible for the little groups: they
+    are subgroups of the point group at one momentum, so they are not any of the
+    named groups.  The named ones in ``geometry/2dsym.py`` override the
     table to keep their own labels and conventions.  A model holds one of these
     three and never learns which.
     '''

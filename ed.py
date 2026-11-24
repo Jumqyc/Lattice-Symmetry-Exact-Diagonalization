@@ -127,7 +127,7 @@ class Model:
                 plane or a screw axis enters, since those are a rotation plus a
                 fractional translation.  Any finite subgroup of the orthogonal
                 group of the plane can be given as an
-                :class:`representation.ExplicitPointGroup`, which reads its
+                group built by :func:`representation.group_of`, which reads its
                 character table off the operation list; that is also what the
                 little groups are, since they are subgroups rather than one of
                 the named groups.
