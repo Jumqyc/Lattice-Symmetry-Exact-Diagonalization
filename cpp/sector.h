@@ -82,8 +82,11 @@ namespace ed {
  * @short State -> (orbit, translation) for one momentum sector.
  */
 struct SectorMap {
-    std::vector<int> orbit;          // one entry per state
-    std::vector<short> translation;  // and the translation that reaches it
+    // one entry per state: the orbit label in the upper bits and the translation
+    // that reaches it in the low byte, so the two are read with a single access
+    std::vector<int> placement;
+    int orbit_of(int state) const { return placement[static_cast<std::size_t>(state)] >> 8; }
+    int translation_of(int state) const { return placement[static_cast<std::size_t>(state)] & 0xff; }
     std::vector<int> representative; // the word of every orbit
     std::vector<int> start;          // the states of an orbit: start[o]..start[o + 1]
     std::vector<int> states;

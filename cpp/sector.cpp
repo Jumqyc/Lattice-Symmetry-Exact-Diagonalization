@@ -242,12 +242,11 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
     const int n = basis.size();
     const int groups = static_cast<int>(translations.size());
     SectorMap out;
-    out.orbit.assign(static_cast<std::size_t>(n), -1);
-    out.translation.assign(static_cast<std::size_t>(n), 0);
+    out.placement.assign(static_cast<std::size_t>(n), -1);   // -1: not yet labelled
     out.start.push_back(0);
     out.stabiliser_start.push_back(0);
     for (int state = 0; state < n; ++state) {
-        if (out.orbit[state] >= 0) continue;          // its orbit is already labelled
+        if (out.orbit_of(state) >= 0) continue;      // its orbit is already labelled
         const int label = out.orbits;
         std::uint64_t smallest = std::numeric_limits<std::uint64_t>::max();
         std::vector<int> members;
@@ -257,7 +256,7 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
             const int at = basis.index(image);
             if (at < 0)
                 throw std::runtime_error("a translation left the basis; the sector is inconsistent");
-            out.orbit[at] = label;
+            out.placement[at] = label << 8;
             members.push_back(at);
             smallest = std::min(smallest, image);
         }
@@ -267,7 +266,8 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
         const int representative = basis.index(smallest);
         for (int g = 0; g < groups; ++g) {
             const std::uint64_t image = apply(basis, translations[g], smallest).first;
-            out.translation[basis.index(image)] = static_cast<short>(g);
+            const int at = basis.index(image);
+            out.placement[at] = (out.orbit_of(at) << 8) | g;
         }
         // the members are the images just collected, deduplicated for a state that a
         // translation leaves in place; scanning the whole basis per orbit instead
@@ -320,7 +320,7 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
             Complex total{0.0, 0.0};
             for (int at = sector.start[label]; at < sector.start[label + 1]; ++at) {
                 const int state = sector.states[at];
-                const Complex weight = std::conj(characters[sector.translation[state]]) * weight_scale;
+                const Complex weight = std::conj(characters[sector.translation_of(state)]) * weight_scale;
                 basis.unpack_into(basis.state(state), digits);
                 if (!basis.has_table()) basis.prefix_charges(digits, prefix);
                 Complex inner{0.0, 0.0};
@@ -329,9 +329,9 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
                     apply_prepared(basis, term, basis.state(state), digits, prefix, state, images);
                     for (const auto& entry : images) {
                         const int target = entry.first;
-                        const int other = sector.orbit[target];
+                        const int other = sector.orbit_of(target);
                         if (other < 0) continue;      // that column is empty for this momentum
-                        const Complex column = std::conj(characters[sector.translation[target]])
+                        const Complex column = std::conj(characters[sector.translation_of(target)])
                                                / length[static_cast<std::size_t>(other)];
                         // H[s, s'] times the column weight B[s', O'] and the
                         // entry of the vector on that orbit (the phase of the row
@@ -351,8 +351,7 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
 SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& characters)
 {
     SectorMap out;
-    out.orbit.assign(full.orbit.size(), -1);
-    out.translation = full.translation;
+    out.placement.assign(full.placement.size(), -1);        // dropped until kept
     out.start.push_back(0);
     out.stabiliser_start.push_back(0);
     for (int label = 0; label < full.orbits; ++label) {
@@ -364,8 +363,10 @@ SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& chara
         if (std::abs(sum) <= 1e-12) continue;
         const int kept = out.orbits++;
         for (int at = full.start[label]; at < full.start[label + 1]; ++at) {
-            out.states.push_back(full.states[at]);
-            out.orbit[full.states[at]] = kept;
+            const int state = full.states[at];
+            out.states.push_back(state);
+            // the same translation as before, under the new label
+            out.placement[state] = (kept << 8) | full.translation_of(state);
         }
         out.start.push_back(static_cast<int>(out.states.size()));
         for (int at = full.stabiliser_start[label]; at < full.stabiliser_start[label + 1]; ++at)
@@ -392,7 +393,7 @@ PhasedPermutation action_on_orbits(const Basis& basis, const SectorMap& sector,
         if (target < 0)
             throw std::runtime_error("a little-group element left the basis; the sector is "
                                      "inconsistent");
-        out.act[label] = sector.orbit[target];
+        out.act[label] = sector.orbit_of(target);
         // The phase is not just the one the action gives the representative: the
         // column of the target is normalised with the character of the translation
         // that reaches each of its states, and the action moves the representative
@@ -505,7 +506,7 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                 for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
                     const int state = sector.states[s];
                     const Complex amplitude =
-                        coefficient * std::conj(characters[sector.translation[state]])
+                        coefficient * std::conj(characters[sector.translation_of(state)])
                         * scale[static_cast<std::size_t>(label)];
                     if (amplitude == Complex{0.0, 0.0}) continue;
                     basis.unpack_into(basis.state(state), digits);
@@ -515,9 +516,9 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                         apply_prepared(basis, term, basis.state(state), digits, prefix, state, images);
                         for (const auto& image : images) {
                             const Complex contribution = image.second * amplitude;
-                            const int arrived = sector.orbit[image.first];
+                            const int arrived = sector.orbit_of(image.first);
                             if (arrived < 0) continue;
-                            const Complex factor = characters[sector.translation[image.first]];
+                            const Complex factor = characters[sector.translation_of(image.first)];
                             for (const auto& entry : holder[static_cast<std::size_t>(arrived)]) {
                                 const int target = entry.first;
                                 if (stamp[static_cast<std::size_t>(target)] != index) {
@@ -574,7 +575,7 @@ SparseMatrix sector_basis(const Basis& basis, const SectorMap& sector,
         for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
             const int state = sector.states[s];
             weight[static_cast<std::size_t>(state)] =
-                std::conj(characters[sector.translation[state]])
+                std::conj(characters[sector.translation_of(state)])
                 * scale[static_cast<std::size_t>(label)];
         }
 
