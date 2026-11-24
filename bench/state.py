@@ -44,7 +44,7 @@ def models():
         ('3x3 triangular, D6', heisenberg(3, twod.D6(), T1, T2), None, True),
         ('4x4 square, D4, Sz=8', heisenberg(4, twod.D4()), 8, False),
         ('4x5 rectangle, D2, Sz=10',
-         rectangle(4, 5, twod.DihedralGroup(2), A1, A2), 10, False),
+         rectangle(4, 5, twod.dihedral_of_order(2), A1, A2), 10, False),
     ]
 
 

@@ -5,6 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 import representation
+from base import PointGroup
 
 
 def rotation(rad: float) -> np.ndarray:
@@ -40,208 +41,191 @@ def reflection(rad: float) -> np.ndarray:
 # Cyclic groups  C₂ · C₃ · C₄ · C₆
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class CyclicGroup(representation.CyclicGroup):
+def cyclic_operations(n: int) -> list[np.ndarray]:
     '''
-    Base for cyclic groups Cₙ (order *n*).
+    The *n* rotations of C*n*.
 
-    Operations: rotations by 2πk/n for k = 0, 1, …, n−1.
-    All irreps are one-dimensional.
+    Args:
+        n: the order of the rotation subgroup.
+    Returns:
+        The rotations by 2πk/n for k = 0, …, n−1.
+    '''
+    return [rotation(2 * np.pi * k / n) for k in range(n)]
+
+
+def dihedral_operations(n: int) -> list[np.ndarray]:
+    '''
+    The *n* rotations and *n* reflections of D*n*.
+
+    Args:
+        n: the order of the rotation subgroup.
+    Returns:
+        The rotations by 2πk/n, then the reflections about the axes at πk/n.
+    '''
+    return cyclic_operations(n) + [reflection(np.pi * k / n) for k in range(n)]
+
+
+class CyclicGroup(PointGroup):
+    '''
+    A cyclic group C*n*: *n* rotations and nothing else.
+
+    Its irreps are *n* one-dimensional ones, ``'j0' … 'j{n-1}'``, with
+    ``χ_j(r^m) = exp(2πi j m / n)``.
     '''
 
-    def __init__(self, n: int):
-        self.n = n
-        super().__init__([rotation(2 * np.pi * k / n) for k in range(n)])
+    def __init__(self, operations: list[np.ndarray]):
+        '''
+        Args:
+            operations: the rotations of the group, as matrices.
+        '''
+        self._ops = [np.asarray(op, dtype=float) for op in operations]
+        self._operations = tuple(representation._matrix_to_flat(op) for op in self._ops)
+        self._n = len(self._ops)
+        self.n = self._n
 
     def _get_rotation_power(self, op: np.ndarray) -> int:
         '''
-        Return the integer *k* (mod *n*) such that *op* ≈ Cₙᵏ (rotation by
-        2πk/n).
+        The power *k* (mod *n*) such that *op* is the rotation by 2πk/n.
+
+        Args:
+            op: an operation of the group.
+        Returns:
+            The power, as an integer in ``[0, n)``.
         '''
-        angle = np.arctan2(op[1, 0], op[0, 0])
-        angle = angle % (2 * np.pi)
-        return int(round(angle * self.n / (2 * np.pi))) % self.n
+        return self._rotation_power(op)
 
+    def __iter__(self):
+        return iter([op.copy() for op in self._ops])
 
-# ── C₂ ──────────────────────────────────────────────────────────────────────
+    def __eq__(self, other):
+        if not isinstance(other, CyclicGroup):
+            return NotImplemented
+        return self._operations == other._operations
 
-class C2(CyclicGroup):
-    '''
-    Cyclic group of order 2: {E, C₂}.
+    def __hash__(self):
+        return hash(self._operations)
 
-    Irreps
-    ------
-    =====  ===  ====
-    Irrep   E   C₂
-    =====  ===  ====
-    A       1    1
-    B       1   −1
-    =====  ===  ====
-    '''
+    @property
+    def order(self) -> int:
+        '''The number of operations, *n*.'''
+        return self._n
 
-    def __init__(self):
-        super().__init__(2)
+    def _rotation_power(self, op: np.ndarray) -> int:
+        '''
+        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
+        '''
+        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
+        return int(round(angle * self._n / (2 * np.pi))) % self._n
 
     def all_irrps(self) -> list[str]:
-        return ['A', 'B']
+        return [f'j{j}' for j in range(self._n)]
 
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)          # 0 → E,  1 → C₂
-        if irrp == 'A':
+    def character(self, irrep: str, op: np.ndarray) -> complex:
+        '''
+        Character of *irrep* on *op*.
+
+        Args:
+            irrep: one of the labels returned by ``all_irrps``.
+            op: an operation of the group.
+        Returns:
+            The character.
+        Raises:
+            ValueError: if *irrep* is not a label of this group.
+        '''
+        if irrep not in self.all_irrps():
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
+        return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self._n)
+
+
+class DihedralGroup(PointGroup):
+    '''
+    A dihedral group D*n*: *n* rotations and *n* reflections.
+
+    Its irreps are ``'A1'``, ``'A2'`` (plus ``'B1'``, ``'B2'`` for even *n*) and the
+    two-dimensional ``'E1' …``, with ``χ_{E_j}(r^m) = 2 cos(2π j m / n)`` on rotations
+    and 0 on reflections.  A reflection is written ``σ = σ_0 r^m`` with σ_0 the first
+    reflection of the list; its character is ``(-1)^m`` for ``B1`` and ``-(-1)^m`` for
+    ``B2``.
+    '''
+
+    def __init__(self, operations: list[np.ndarray]):
+        '''
+        Args:
+            operations: the rotations and reflections of the group, as matrices.
+        '''
+        self._ops = [np.asarray(op, dtype=float) for op in operations]
+        self._operations = tuple(representation._matrix_to_flat(op) for op in self._ops)
+        self._rotations = [op for op in self._ops if np.linalg.det(op) > 0]
+        self._reflections = [op for op in self._ops if np.linalg.det(op) < 0]
+        self._n = len(self._rotations)
+        self.n = self._n
+
+    def __iter__(self):
+        return iter([op.copy() for op in self._ops])
+
+    def __eq__(self, other):
+        if not isinstance(other, DihedralGroup):
+            return NotImplemented
+        return self._operations == other._operations
+
+    def __hash__(self):
+        return hash(self._operations)
+
+    @property
+    def order(self) -> int:
+        '''The number of operations, *2n*.'''
+        return len(self._ops)
+
+    @staticmethod
+    def _is_rotation(op: np.ndarray) -> bool:
+        '''Return True if *op* is a proper rotation (det > 0).'''
+        return np.linalg.det(np.asarray(op, dtype=float)) > 0
+
+    def _rotation_power(self, op: np.ndarray) -> int:
+        '''
+        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
+        '''
+        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
+        return int(round(angle * self._n / (2 * np.pi))) % self._n
+
+    def all_irrps(self) -> list[str]:
+        labels = ['A1', 'A2']
+        if self._n % 2 == 0:
+            labels += ['B1', 'B2']
+        return labels + [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
+
+    def character(self, irrep: str, op: np.ndarray) -> complex:
+        '''
+        Character of *irrep* on *op*.
+
+        Args:
+            irrep: one of the labels returned by ``all_irrps``.
+            op: an operation of the group.
+        Returns:
+            The character.
+        Raises:
+            ValueError: if *irrep* is not a label of this group.
+        '''
+        if irrep not in self.all_irrps():
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
+        arr = np.asarray(op, dtype=float)
+        if self._is_rotation(arr):
+            m = self._rotation_power(arr)
+            if irrep in ('A1', 'A2'):
+                return 1.0
+            if irrep in ('B1', 'B2'):
+                return 1.0 if m % 2 == 0 else -1.0
+            return 2.0 * np.cos(2 * np.pi * int(irrep[1:]) * m / self._n)
+        m = self._rotation_power(self._reflections[0] @ arr)
+        if irrep == 'A1':
             return 1.0
-        if irrp == 'B':
-            return 1.0 if k == 0 else -1.0
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₃ ──────────────────────────────────────────────────────────────────────
-
-class C3(CyclicGroup):
-    '''
-    Cyclic group of order 3: {E, C₃, C₃²}.
-
-    Irreps
-    ------
-    =====  ===  =====  ======
-    Irrep   E    C₃     C₃²
-    =====  ===  =====  ======
-    A       1    1      1
-    E₁      1    ω      ω²
-    E₂      1    ω²     ω
-    =====  ===  =====  ======
-
-    ω = exp(2πi/3).
-    '''
-
-    def __init__(self):
-        super().__init__(3)
-
-    def all_irrps(self) -> list[str]:
-        return ['A', 'E1', 'E2']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
-        omega = np.exp(2j * np.pi / 3)
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'E1':
-                return omega ** k
-            case 'E2':
-                return omega ** (2 * k)
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₄ ──────────────────────────────────────────────────────────────────────
-
-class C4(CyclicGroup):
-    '''
-    Cyclic group of order 4: {E, C₄, C₂, C₄³}.
-
-    Irreps
-    ------
-    =====  ===  ====  ===  =====
-    Irrep   E    C₄    C₂   C₄³
-    =====  ===  ====  ===  =====
-    A       1    1     1    1
-    B       1   −1     1   −1
-    E₁      1    i    −1   −i
-    E₂      1   −i    −1    i
-    =====  ===  ====  ===  =====
-    '''
-
-    def __init__(self):
-        super().__init__(4)
-
-    def all_irrps(self) -> list[str]:
-        return ['A', 'B', 'E1', 'E2']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'B':
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'E1':
-                return 1j ** k
-            case 'E2':
-                return (-1j) ** k
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₆ ──────────────────────────────────────────────────────────────────────
-
-class C6(CyclicGroup):
-    '''
-    Cyclic group of order 6: {E, C₆, C₃, C₂, C₃², C₆⁵}.
-
-    Irreps
-    ------
-    =====  ===  ====  ===  ===  =====  =====
-    Irrep   E    C₆    C₃   C₂   C₃²    C₆⁵
-    =====  ===  ====  ===  ===  =====  =====
-    A       1    1     1    1    1      1
-    B       1   −1     1   −1    1     −1
-    E₁      1    ω    ω²   −1   ω⁴     ω⁵
-    E₂      1   ω²    ω⁴   1    ω²     ω⁴
-    E₁*     1   ω⁵    ω⁴  −1    ω²     ω
-    E₂*     1   ω⁴    ω²   1    ω⁴     ω²
-    =====  ===  ====  ===  ===  =====  =====
-
-    ω = exp(πi/3).
-    '''
-
-    def __init__(self):
-        super().__init__(6)
-
-    def all_irrps(self) -> list[str]:
-        return ['A', 'B', 'E1', 'E2', 'E1*', 'E2*']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._get_rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
-        omega = np.exp(1j * np.pi / 3)     # exp(πi/3)
-
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'B':
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'E1':
-                return omega ** k
-            case 'E2':
-                return omega ** (2 * k)
-            case 'E1*':
-                return omega ** (5 * k)
-            case 'E2*':
-                return omega ** (4 * k)
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Dihedral groups  D₃ · D₄ · D₆
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class DihedralGroup(representation.DihedralGroup):
-    '''
-    Base for dihedral groups Dₙ (order 2*n*).
-
-    Operations
-    ----------
-    - *n* rotations Cₙᵏ by 2πk/n  (k = 0, …, n−1)
-    - *n* reflections σ about axes at angles πk/n  (k = 0, …, n−1)
-
-    Reflections are stored **after** rotations in ``_operations``.
-    '''
-
-    def __init__(self, n: int):
-        self.n = n
-        # Rotations
-        rots = [rotation(2 * np.pi * k / n) for k in range(n)]
-        # Reflections: axis at angle π·k / n
-        refs = [reflection(np.pi * k / n) for k in range(n)]
-        super().__init__(rots + refs)
-
-    # ── identifying operations ───────────────────────────────────────────
+        if irrep == 'A2':
+            return -1.0
+        if irrep == 'B1':
+            return 1.0 if m % 2 == 0 else -1.0
+        if irrep == 'B2':
+            return -1.0 if m % 2 == 0 else 1.0
+        return 0.0
 
     def _get_rotation_power(self, op: np.ndarray) -> int:
         '''
@@ -293,6 +277,202 @@ class DihedralGroup(representation.DihedralGroup):
         return 'sv' if k % 2 == 0 else 'sd'
 
 
+def cyclic_of_order(n: int) -> CyclicGroup:
+    '''
+    The cyclic group of order *n*.
+
+    Args:
+        n: the order.
+    Returns:
+        C*n*.
+    '''
+    return CyclicGroup(cyclic_operations(n))
+
+
+def dihedral_of_order(n: int) -> DihedralGroup:
+    '''
+    The dihedral group of order *2n*.
+
+    Args:
+        n: the order of its rotation subgroup.
+    Returns:
+        D*n*.
+    '''
+    return DihedralGroup(dihedral_operations(n))
+
+
+def group_of(operations: list[np.ndarray]) -> PointGroup:
+    '''
+    The group a list of operations is, as the kind it turns out to be.
+
+    Args:
+        operations: the operations, as matrices.
+    Returns:
+        A :class:`CyclicGroup` or a :class:`DihedralGroup`.
+    '''
+    reflections = sum(1 for op in operations if np.linalg.det(np.asarray(op, dtype=float)) < 0)
+    return CyclicGroup(operations) if reflections == 0 else DihedralGroup(operations)
+
+
+# ── C₂ ──────────────────────────────────────────────────────────────────────
+
+class C2(CyclicGroup):
+    '''
+    Cyclic group of order 2: {E, C₂}.
+
+    Irreps
+    ------
+    =====  ===  ====
+    Irrep   E   C₂
+    =====  ===  ====
+    A       1    1
+    B       1   −1
+    =====  ===  ====
+    '''
+
+    def __init__(self):
+        super().__init__(cyclic_operations(2))
+
+    def all_irrps(self) -> list[str]:
+        return ['A', 'B']
+
+    def character(self, irrp: str, op: np.ndarray) -> complex:
+        k = self._get_rotation_power(op)          # 0 → E,  1 → C₂
+        if irrp == 'A':
+            return 1.0
+        if irrp == 'B':
+            return 1.0 if k == 0 else -1.0
+        raise ValueError(f"Unknown irreducible representation: {irrp}")
+
+
+# ── C₃ ──────────────────────────────────────────────────────────────────────
+
+class C3(CyclicGroup):
+    '''
+    Cyclic group of order 3: {E, C₃, C₃²}.
+
+    Irreps
+    ------
+    =====  ===  =====  ======
+    Irrep   E    C₃     C₃²
+    =====  ===  =====  ======
+    A       1    1      1
+    E₁      1    ω      ω²
+    E₂      1    ω²     ω
+    =====  ===  =====  ======
+
+    ω = exp(2πi/3).
+    '''
+
+    def __init__(self):
+        super().__init__(cyclic_operations(3))
+
+    def all_irrps(self) -> list[str]:
+        return ['A', 'E1', 'E2']
+
+    def character(self, irrp: str, op: np.ndarray) -> complex:
+        k = self._get_rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
+        omega = np.exp(2j * np.pi / 3)
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'E1':
+                return omega ** k
+            case 'E2':
+                return omega ** (2 * k)
+        raise ValueError(f"Unknown irreducible representation: {irrp}")
+
+
+# ── C₄ ──────────────────────────────────────────────────────────────────────
+
+class C4(CyclicGroup):
+    '''
+    Cyclic group of order 4: {E, C₄, C₂, C₄³}.
+
+    Irreps
+    ------
+    =====  ===  ====  ===  =====
+    Irrep   E    C₄    C₂   C₄³
+    =====  ===  ====  ===  =====
+    A       1    1     1    1
+    B       1   −1     1   −1
+    E₁      1    i    −1   −i
+    E₂      1   −i    −1    i
+    =====  ===  ====  ===  =====
+    '''
+
+    def __init__(self):
+        super().__init__(cyclic_operations(4))
+
+    def all_irrps(self) -> list[str]:
+        return ['A', 'B', 'E1', 'E2']
+
+    def character(self, irrp: str, op: np.ndarray) -> complex:
+        k = self._get_rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'B':
+                return 1.0 if k % 2 == 0 else -1.0
+            case 'E1':
+                return 1j ** k
+            case 'E2':
+                return (-1j) ** k
+        raise ValueError(f"Unknown irreducible representation: {irrp}")
+
+
+# ── C₆ ──────────────────────────────────────────────────────────────────────
+
+class C6(CyclicGroup):
+    '''
+    Cyclic group of order 6: {E, C₆, C₃, C₂, C₃², C₆⁵}.
+
+    Irreps
+    ------
+    =====  ===  ====  ===  ===  =====  =====
+    Irrep   E    C₆    C₃   C₂   C₃²    C₆⁵
+    =====  ===  ====  ===  ===  =====  =====
+    A       1    1     1    1    1      1
+    B       1   −1     1   −1    1     −1
+    E₁      1    ω    ω²   −1   ω⁴     ω⁵
+    E₂      1   ω²    ω⁴   1    ω²     ω⁴
+    E₁*     1   ω⁵    ω⁴  −1    ω²     ω
+    E₂*     1   ω⁴    ω²   1    ω⁴     ω²
+    =====  ===  ====  ===  ===  =====  =====
+
+    ω = exp(πi/3).
+    '''
+
+    def __init__(self):
+        super().__init__(cyclic_operations(6))
+
+    def all_irrps(self) -> list[str]:
+        return ['A', 'B', 'E1', 'E2', 'E1*', 'E2*']
+
+    def character(self, irrp: str, op: np.ndarray) -> complex:
+        k = self._get_rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
+        omega = np.exp(1j * np.pi / 3)     # exp(πi/3)
+
+        match irrp:
+            case 'A':
+                return 1.0
+            case 'B':
+                return 1.0 if k % 2 == 0 else -1.0
+            case 'E1':
+                return omega ** k
+            case 'E2':
+                return omega ** (2 * k)
+            case 'E1*':
+                return omega ** (5 * k)
+            case 'E2*':
+                return omega ** (4 * k)
+        raise ValueError(f"Unknown irreducible representation: {irrp}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dihedral groups  D₃ · D₄ · D₆
+# ═══════════════════════════════════════════════════════════════════════════════
+
 # ── D₃ ──────────────────────────────────────────────────────────────────────
 
 class D3(DihedralGroup):
@@ -311,7 +491,7 @@ class D3(DihedralGroup):
     '''
 
     def __init__(self):
-        super().__init__(3)
+        super().__init__(dihedral_operations(3))
 
     def all_irrps(self) -> list[str]:
         return ['A1', 'A2', 'E']
@@ -354,7 +534,7 @@ class D4(DihedralGroup):
     '''
 
     def __init__(self):
-        super().__init__(4)
+        super().__init__(dihedral_operations(4))
 
     def all_irrps(self) -> list[str]:
         return ['A1', 'A2', 'B1', 'B2', 'E']
@@ -406,7 +586,7 @@ class D6(DihedralGroup):
     '''
 
     def __init__(self):
-        super().__init__(6)
+        super().__init__(dihedral_operations(6))
 
     def all_irrps(self) -> list[str]:
         return ['A1', 'A2', 'B1', 'B2', 'E1', 'E2']

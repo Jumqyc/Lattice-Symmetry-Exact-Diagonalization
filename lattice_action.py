@@ -27,8 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from base import LatticeAction, PointGroup
-from representation import (group_of, TrivialGroup, _right_coset_representatives,
-                            _unique_ops)
+from representation import _right_coset_representatives, _unique_ops
 
 
 # positions are compared after rounding to this many decimals; a symmetry
@@ -142,9 +141,9 @@ def preserves_momentum(op: np.ndarray, k: tuple[int, ...],
     return bool(np.all((M.T @ label - label) % np.asarray(Nvec, dtype=int) == 0))
 
 
-def little_group(point_group: PointGroup, k: tuple[int, ...],
+def little_group_operations(point_group: PointGroup, k: tuple[int, ...],
                  supercell_vectors: np.ndarray, Nvec: np.ndarray
-                 ) -> tuple[PointGroup, list[np.ndarray]]:
+                 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     '''
     Little group of the momentum label *k*, plus coset representatives.
 
@@ -162,13 +161,7 @@ def little_group(point_group: PointGroup, k: tuple[int, ...],
     preserving = [op for op in ops
                   if preserves_momentum(op, k, supercell_vectors, Nvec)]
     coset_reps = _right_coset_representatives(ops, preserving)
-    if len(preserving) == len(ops):
-        group: PointGroup = point_group
-    elif len(preserving) == 1:
-        group = TrivialGroup()
-    else:
-        group = group_of(preserving)
-    return group, coset_reps
+    return preserving, coset_reps
 
 
 class Lattice:

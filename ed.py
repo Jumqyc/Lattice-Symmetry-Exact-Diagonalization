@@ -19,6 +19,7 @@ space.
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Optional
@@ -31,8 +32,13 @@ import kernel
 
 from base import LatticeAction, PointGroup
 from hilbert_action import MonomialAction, Permutation, extract_monomial, from_lattice_action
-from lattice_action import AffineAction, Lattice, TranslationGroup, label_action, little_group
+from lattice_action import (AffineAction, Lattice, TranslationGroup, label_action,
+                            little_group_operations)
 from representation import TrivialGroup
+
+# the 2D point groups live in a module whose name starts with a digit, so it is
+# reached by name rather than by an import statement
+_twod = importlib.import_module('geometry.2dsym')
 
 
 # key of a sector: (momentum label, little-group irrep, spin-flip parity)
@@ -329,7 +335,13 @@ class Model:
             invariant, and a list of representatives of the *right* cosets
             ``G_k \\ G_pt`` (used only by the induced-character test).
         '''
-        return little_group(self.point_group, k, self.lattice.supercell_vectors, self.lattice.Nvec)
+        operations, cosets = little_group_operations(
+            self.point_group, k, self.lattice.supercell_vectors, self.lattice.Nvec)
+        if len(operations) == len(list(self.point_group)):
+            return self.point_group, cosets
+        if len(operations) == 1:
+            return TrivialGroup(), cosets
+        return _twod.group_of(operations), cosets
 
     def _spin_flip_action(self) -> MonomialAction:
         '''
