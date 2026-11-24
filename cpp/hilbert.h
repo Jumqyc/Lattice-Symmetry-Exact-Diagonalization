@@ -168,6 +168,29 @@ struct MonomialAction {
 };
 
 /**
+ * @param basis the computational basis, for the packing.
+ * @param action the operation to test.
+ * @return The number of sites the action shifts the packed word by, or -1 when it
+ *         is not a pure rotation.
+ * @detail A translation of a torus permutes the sites cyclically and carries no
+ *         local phase, so its image is the packed word rotated by a whole number of
+ *         fields -- a shift and an or, whatever the local dimension, because the
+ *         fields move whole and no digit is reinterpreted.  Recognising that here
+ *         is what lets the orbit walk cost a shift instead of a pass over the
+ *         lattice.
+ * @short The shift of a pure rotation, or -1.
+ */
+int rotation_shift(const Basis& basis, const MonomialAction& action);
+
+/**
+ * @param word the packed state.
+ * @param shift the number of bits to rotate it by, left.
+ * @param total how many bits the word carries.
+ * @short Rotate a packed word cyclically.
+ */
+std::uint64_t rotate_word(std::uint64_t word, int shift, int total);
+
+/**
  * @param basis the computational basis.
  * @param action the operation.
  * @param word a basis state.

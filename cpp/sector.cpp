@@ -245,6 +245,14 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
     out.placement.assign(static_cast<std::size_t>(n), -1);   // -1: not yet labelled
     out.start.push_back(0);
     out.stabiliser_start.push_back(0);
+    // a torus translation is a rotation of the packed word, so the walk asks for a
+    // shift and an or instead of a pass over the lattice; the check is made once
+    const int total = basis.bits() * basis.sites();
+    std::vector<int> shifts(static_cast<std::size_t>(groups), -1);
+    for (int g = 0; g < groups; ++g) {
+        const int shift = rotation_shift(basis, translations[g]);
+        if (shift >= 0) shifts[static_cast<std::size_t>(g)] = shift * basis.bits();
+    }
     for (int state = 0; state < n; ++state) {
         if (out.orbit_of(state) >= 0) continue;      // its orbit is already labelled
         const int label = out.orbits;
@@ -252,7 +260,10 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
         std::vector<int> members;
         members.reserve(static_cast<std::size_t>(groups));
         for (int g = 0; g < groups; ++g) {
-            const std::uint64_t image = apply(basis, translations[g], basis.state(state)).first;
+            const std::uint64_t image =
+                shifts[static_cast<std::size_t>(g)] >= 0
+                    ? rotate_word(basis.state(state), shifts[static_cast<std::size_t>(g)], total)
+                    : apply(basis, translations[g], basis.state(state)).first;
             const int at = basis.index(image);
             if (at < 0)
                 throw std::runtime_error("a translation left the basis; the sector is inconsistent");
@@ -265,7 +276,10 @@ SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& tran
         // basis, so the two agree whatever the orbit looks like
         const int representative = basis.index(smallest);
         for (int g = 0; g < groups; ++g) {
-            const std::uint64_t image = apply(basis, translations[g], smallest).first;
+            const std::uint64_t image =
+                shifts[static_cast<std::size_t>(g)] >= 0
+                    ? rotate_word(smallest, shifts[static_cast<std::size_t>(g)], total)
+                    : apply(basis, translations[g], smallest).first;
             const int at = basis.index(image);
             out.placement[at] = (out.orbit_of(at) << 8) | g;
         }

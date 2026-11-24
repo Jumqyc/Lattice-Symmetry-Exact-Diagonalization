@@ -259,6 +259,35 @@ void Basis::unpack_into(std::uint64_t word, std::vector<int>& digits) const
     for (int i = 0; i < sites_; ++i) digits[i] = digit(word, i);
 }
 
+int rotation_shift(const Basis& basis, const MonomialAction& action)
+{
+    const int sites = basis.sites();
+    const int local = basis.local_dim();
+    if (static_cast<int>(action.site_perm.size()) != sites) return -1;
+    if (static_cast<int>(action.local_perm.size()) != sites * local) return -1;
+    // every local table the identity, every phase one: the action moves the sites
+    // and only the sites
+    for (int i = 0; i < sites * local; ++i) {
+        if (action.local_perm[i] != i % local) return -1;
+        if (action.local_phase[i] != Complex{1.0, 0.0}) return -1;
+    }
+    // the site map is a cyclic shift: perm[i] = (i + shift) mod sites
+    const int shift = action.site_perm[0];
+    if (shift < 0 || shift >= sites) return -1;
+    for (int i = 0; i < sites; ++i)
+        if (action.site_perm[i] != (i + shift) % sites) return -1;
+    return shift;
+}
+
+std::uint64_t rotate_word(std::uint64_t word, int shift, int total)
+{
+    if (total <= 0) return word;
+    const int move = shift % total;
+    if (move == 0) return word;
+    const std::uint64_t mask = (total >= 64) ? ~0ull : ((1ull << total) - 1ull);
+    return ((word << move) | (word >> (total - move))) & mask;
+}
+
 std::pair<std::uint64_t, Complex> apply(const Basis& basis, const MonomialAction& action,
                                         std::uint64_t word)
 {
