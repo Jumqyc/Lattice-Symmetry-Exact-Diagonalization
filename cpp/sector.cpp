@@ -93,6 +93,98 @@ private:
 }  // namespace
 
 
+namespace {
+
+/**
+ * @param orbit the orbit, as sector columns.
+ * @param local where each of the orbit's columns sits in the orbit (scratch).
+ * @param actions the little group.
+ * @param characters the characters of the irrep.
+ * @param dim the dimension of the irrep.
+ * @detail The trace of the projector restricted to the orbit, times its dimension
+ *         over the order of the group: the rank the orthonormalisation has to
+ *         reproduce, which is also the check that the character table and the action
+ *         agree.
+ * @short How many adapted vectors the orbit carries.
+ */
+int predicted_rank(const std::vector<int>& orbit, const std::vector<int>& local,
+                   const std::vector<PhasedPermutation>& actions,
+                   const std::vector<Complex>& characters, int dim)
+{
+    const int groups = static_cast<int>(characters.size());
+    const int size = static_cast<int>(orbit.size());
+    Complex trace{0.0, 0.0};
+    for (int g = 0; g < groups; ++g) {
+        Complex fixed{0.0, 0.0};
+        for (int i = 0; i < size; ++i)
+            if (local[actions[g].act[orbit[i]]] == i) fixed += actions[g].phase[orbit[i]];
+        trace += std::conj(characters[g]) * fixed;
+    }
+    return static_cast<int>(std::lround(
+        (static_cast<double>(dim) / static_cast<double>(groups)) * trace.real()));
+}
+
+/**
+ * @param orbit the orbit, as sector columns.
+ * @param local where each of the orbit's columns sits in the orbit (scratch).
+ * @param x the orbit element to project.
+ * @param actions the little group.
+ * @param characters the characters of the irrep.
+ * @param dim the dimension of the irrep.
+ * @return The projected vector, indexed by position in the orbit.
+ * @detail The projector applied to one column of the orbit, ``sum_g
+ *         conj(chi(g)) U(g) |x>`` in orbit-local indices.
+ * @short The projected vector of one orbit element.
+ */
+std::vector<Complex> project(const std::vector<int>& orbit, const std::vector<int>& local,
+                            int x, const std::vector<PhasedPermutation>& actions,
+                            const std::vector<Complex>& characters, int dim)
+{
+    const int groups = static_cast<int>(characters.size());
+    std::vector<Complex> candidate(orbit.size(), Complex{0.0, 0.0});
+    for (int g = 0; g < groups; ++g) {
+        const int to = local[actions[g].act[orbit[x]]];
+        candidate[to] += std::conj(characters[g]) * actions[g].phase[orbit[x]]
+                         * (static_cast<double>(dim) / static_cast<double>(groups));
+    }
+    return candidate;
+}
+
+/**
+ * @param candidate the vector to orthonormalise, destroyed on the way.
+ * @param accepted the orthonormal vectors so far, as supports.
+ * @param size how many columns the orbit has.
+ * @return The orthonormal vector as a support, empty when it was dependent.
+ * @detail Two passes of modified Gram-Schmidt: a single pass loses orthogonality as
+ *         soon as the orbit is larger than a handful of columns.
+ * @short The candidate, orthogonalised and normalised.
+ */
+std::vector<std::pair<int, Complex>> orthonormalize(
+    std::vector<Complex> candidate,
+    const std::vector<std::vector<std::pair<int, Complex>>>& accepted, int size)
+{
+    for (int pass = 0; pass < 2; ++pass)
+        for (const auto& keep : accepted) {
+            Complex overlap{0.0, 0.0};
+            for (const auto& entry : keep)
+                overlap += std::conj(entry.second) * candidate[entry.first];
+            for (const auto& entry : keep)
+                candidate[entry.first] -= overlap * entry.second;
+        }
+    double length = 0.0;
+    for (const Complex value : candidate) length += std::norm(value);
+    length = std::sqrt(length);
+    if (length < 1e-8) return {};            // dependent on what is already in
+    std::vector<std::pair<int, Complex>> vector;
+    for (int i = 0; i < size; ++i) {
+        if (std::abs(candidate[i]) < 1e-14) continue;
+        vector.emplace_back(i, candidate[i] / length);
+    }
+    return vector;
+}
+
+}  // namespace
+
 SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,
                              int dim, int column_count, int threads)
@@ -103,62 +195,26 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
     const std::vector<std::vector<int>> orbits = column_orbits(actions, column_count);
 
     // the orbits are independent, so they are spread over the workers; each worker
-    // keeps its own copy of the orbit-to-index scratch, and only the current
-    // orbit's entries are written -- filling the whole sector per orbit is what
-    // this loop used to cost
+    // keeps its own copy of the orbit-to-index scratch, and only the current orbit's
+    // entries are written
     std::vector<std::vector<std::vector<std::pair<int, Complex>>>> produced(orbits.size());
-    parallel_ranges(static_cast<int>(orbits.size()),
-                    [&](int begin, int end) {
+    parallel_ranges(static_cast<int>(orbits.size()), [&](int begin, int end) {
         std::vector<int> local(column_count, -1);
-        std::vector<Complex> candidate;
         for (int index = begin; index < end; ++index) {
             const std::vector<int>& orbit = orbits[index];
             const int size = static_cast<int>(orbit.size());
             for (int i = 0; i < size; ++i) local[orbit[i]] = i;
 
-            // the rank the character predicts on this orbit, from the trace of the
-            // projector: it is what the orthonormalisation below has to reproduce
-            Complex trace{0.0, 0.0};
-            for (int g = 0; g < groups; ++g) {
-                Complex fixed{0.0, 0.0};
-                for (int i = 0; i < size; ++i)
-                    if (local[actions[g].act[orbit[i]]] == i) fixed += actions[g].phase[orbit[i]];
-                trace += std::conj(characters[g]) * fixed;
-            }
-            const int expected = static_cast<int>(std::lround(
-                (static_cast<double>(dim) / static_cast<double>(groups)) * trace.real()));
+            const int expected = predicted_rank(orbit, local, actions, characters, dim);
 
-            // the projected basis vectors of this orbit, orthonormalized one at a
-            // time: the image of the projector is spanned by them, so this gives an
-            // orthonormal basis of the isotypic component of the orbit
+            // the projected vectors of the orbit, orthonormalized one at a time: the
+            // image of the projector is spanned by them, so this gives an orthonormal
+            // basis of the isotypic component of the orbit
             std::vector<std::vector<std::pair<int, Complex>>> accepted;
             for (int x = 0; x < size && static_cast<int>(accepted.size()) < expected; ++x) {
-                candidate.assign(size, Complex{0.0, 0.0});
-                for (int g = 0; g < groups; ++g) {
-                    const int to = local[actions[g].act[orbit[x]]];
-                    candidate[to] += std::conj(characters[g]) * actions[g].phase[orbit[x]]
-                                     * (static_cast<double>(dim) / static_cast<double>(groups));
-                }
-                // two passes of modified Gram-Schmidt over the accepted supports; a
-                // single pass loses orthogonality as soon as the orbit is larger
-                // than a handful of columns
-                for (int pass = 0; pass < 2; ++pass)
-                    for (const auto& keep : accepted) {
-                        Complex overlap{0.0, 0.0};
-                        for (const auto& entry : keep)
-                            overlap += std::conj(entry.second) * candidate[entry.first];
-                        for (const auto& entry : keep)
-                            candidate[entry.first] -= overlap * entry.second;
-                    }
-                double length = 0.0;
-                for (const Complex value : candidate) length += std::norm(value);
-                length = std::sqrt(length);
-                if (length < 1e-8) continue;        // dependent on what is already in
-                std::vector<std::pair<int, Complex>> vector;
-                for (int i = 0; i < size; ++i) {
-                    if (std::abs(candidate[i]) < 1e-14) continue;
-                    vector.emplace_back(i, candidate[i] / length);
-                }
+                std::vector<std::pair<int, Complex>> vector = orthonormalize(
+                    project(orbit, local, x, actions, characters, dim), accepted, size);
+                if (vector.empty()) continue;        // dependent on what is already in
                 accepted.push_back(std::move(vector));
             }
             if (static_cast<int>(accepted.size()) != expected)
@@ -166,8 +222,8 @@ SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                     "the isotypic component of an orbit has the wrong dimension: the "
                     "character table and the action on the sector disagree");
 
-            // one column per accepted vector: the sector columns are the orbit's
-            // own indices, which is what the block multiplication expects
+            // one column per accepted vector, in sector columns, which is what the
+            // block multiplication expects
             for (const auto& vector : accepted) {
                 std::vector<std::pair<int, Complex>> column;
                 column.reserve(vector.size());
