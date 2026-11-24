@@ -46,36 +46,52 @@ class PointGroup(ABC):
     labels and conventions.  A model holds one of these and never learns which.
     '''
 
-    @abstractmethod
+    # a class may rename the labels its table is written for; empty means it does not
+    _labels: dict[str, str] = {}
+
     def all_irrps(self) -> list[str]:
         '''
-        Return a list of all irreducible representations of the point group.
+        Return the labels of the irreducible representations, in this group's naming.
+
         Returns:
-            A list of strings representing the labels of all irreducible representations.
+            The labels, in the order the table is written.
         '''
-        raise NotImplementedError("This method should be implemented in subclasses.")
-    
-    @abstractmethod
-    def character(self, 
-                  irrep:str, 
-                  op:np.ndarray) -> complex:
+        return list(self._labels) if self._labels else self._irrep_labels()
+
+    def character(self, irrep: str, op: np.ndarray) -> complex:
         '''
-        Return the character of a given irreducible representation for a specific group operation.
+        Return the character of one irreducible representation at one operation.
+
         Args:
-            irrep: A string representing the label of the irreducible representation.
-            op: A numpy array representing the group operation (rotation or inversion).
+            irrep: one of the labels ``all_irrps`` returns.
+            op: a group operation, as a matrix.
         Returns:
-            A complex representing the character of the irreducible representation for the given operation.
+            The character.
+        Raises:
+            ValueError: if *irrep* is not a label of this group.
+        '''
+        label = self._labels[irrep] if self._labels and irrep in self._labels else irrep
+        if label not in self._irrep_labels():
+            raise ValueError(f"Unknown irreducible representation: {irrep}")
+        return self._character(label, op)
+
+    @abstractmethod
+    def _irrep_labels(self) -> list[str]:
+        '''
+        The labels the character table of this group is written for.
         '''
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     @abstractmethod
-    def __iter__(self) -> Iterator[np.ndarray]:
+    def _character(self, irrep: str, op: np.ndarray) -> complex:
         '''
-        Return a fresh iterator over the group operations.
+        The character of one of the table's own labels at one operation.
 
-        Iteration must not carry state: the same group object is iterated
-        several times, sometimes nested.
+        Args:
+            irrep: a label ``_irrep_labels`` returns.
+            op: a group operation, as a matrix.
+        Returns:
+            The character.
         '''
         raise NotImplementedError("This method should be implemented in subclasses.")
 

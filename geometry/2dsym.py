@@ -108,10 +108,10 @@ class CyclicGroup(PointGroup):
         angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
         return int(round(angle * self.n / (2 * np.pi))) % self.n
 
-    def all_irrps(self) -> list[str]:
+    def _irrep_labels(self) -> list[str]:
         return [f'j{j}' for j in range(self.n)]
 
-    def character(self, irrep: str, op: np.ndarray) -> complex:
+    def _character(self, irrep: str, op: np.ndarray) -> complex:
         '''
         Character of *irrep* on *op*.
 
@@ -123,7 +123,7 @@ class CyclicGroup(PointGroup):
         Raises:
             ValueError: if *irrep* is not a label of this group.
         '''
-        if irrep not in self.all_irrps():
+        if irrep not in self._irrep_labels():
             raise ValueError(f"Unknown irreducible representation: {irrep}")
         return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self.n)
 
@@ -180,13 +180,13 @@ class DihedralGroup(PointGroup):
         angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
         return int(round(angle * self.n / (2 * np.pi))) % self.n
 
-    def all_irrps(self) -> list[str]:
+    def _irrep_labels(self) -> list[str]:
         labels = ['A1', 'A2']
         if self.n % 2 == 0:
             labels += ['B1', 'B2']
         return labels + [f'E{j}' for j in range(1, (self.n - 1) // 2 + 1)]
 
-    def character(self, irrep: str, op: np.ndarray) -> complex:
+    def _character(self, irrep: str, op: np.ndarray) -> complex:
         '''
         Character of *irrep* on *op*.
 
@@ -198,7 +198,7 @@ class DihedralGroup(PointGroup):
         Raises:
             ValueError: if *irrep* is not a label of this group.
         '''
-        if irrep not in self.all_irrps():
+        if irrep not in self._irrep_labels():
             raise ValueError(f"Unknown irreducible representation: {irrep}")
         arr = np.asarray(op, dtype=float)
         if self._is_rotation(arr):
@@ -322,22 +322,14 @@ class C2(CyclicGroup):
     =====  ===  ====
     '''
 
+    _labels = {
+        'A': 'j0',
+        'B': 'j1',
+    }
+
     def __init__(self):
         super().__init__(cyclic_operations(2))
 
-    def all_irrps(self) -> list[str]:
-        return ['A', 'B']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._rotation_power(op)          # 0 → E,  1 → C₂
-        if irrp == 'A':
-            return 1.0
-        if irrp == 'B':
-            return 1.0 if k == 0 else -1.0
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₃ ──────────────────────────────────────────────────────────────────────
 
 class C3(CyclicGroup):
     '''
@@ -356,26 +348,15 @@ class C3(CyclicGroup):
     ω = exp(2πi/3).
     '''
 
+    _labels = {
+        'A': 'j0',
+        'E1': 'j1',
+        'E2': 'j2',
+    }
+
     def __init__(self):
         super().__init__(cyclic_operations(3))
 
-    def all_irrps(self) -> list[str]:
-        return ['A', 'E1', 'E2']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._rotation_power(op)          # 0 → E, 1 → C₃, 2 → C₃²
-        omega = np.exp(2j * np.pi / 3)
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'E1':
-                return omega ** k
-            case 'E2':
-                return omega ** (2 * k)
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₄ ──────────────────────────────────────────────────────────────────────
 
 class C4(CyclicGroup):
     '''
@@ -393,27 +374,16 @@ class C4(CyclicGroup):
     =====  ===  ====  ===  =====
     '''
 
+    _labels = {
+        'A': 'j0',
+        'B': 'j2',
+        'E1': 'j1',
+        'E2': 'j3',
+    }
+
     def __init__(self):
         super().__init__(cyclic_operations(4))
 
-    def all_irrps(self) -> list[str]:
-        return ['A', 'B', 'E1', 'E2']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._rotation_power(op)   # 0→E, 1→C₄, 2→C₂, 3→C₄³
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'B':
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'E1':
-                return 1j ** k
-            case 'E2':
-                return (-1j) ** k
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── C₆ ──────────────────────────────────────────────────────────────────────
 
 class C6(CyclicGroup):
     '''
@@ -435,37 +405,18 @@ class C6(CyclicGroup):
     ω = exp(πi/3).
     '''
 
+    _labels = {
+        'A': 'j0',
+        'B': 'j3',
+        'E1': 'j1',
+        'E2': 'j2',
+        'E1*': 'j5',
+        'E2*': 'j4',
+    }
+
     def __init__(self):
         super().__init__(cyclic_operations(6))
 
-    def all_irrps(self) -> list[str]:
-        return ['A', 'B', 'E1', 'E2', 'E1*', 'E2*']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        k = self._rotation_power(op)   # 0→E, 1→C₆, 2→C₃, 3→C₂, 4→C₃², 5→C₆⁵
-        omega = np.exp(1j * np.pi / 3)     # exp(πi/3)
-
-        match irrp:
-            case 'A':
-                return 1.0
-            case 'B':
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'E1':
-                return omega ** k
-            case 'E2':
-                return omega ** (2 * k)
-            case 'E1*':
-                return omega ** (5 * k)
-            case 'E2*':
-                return omega ** (4 * k)
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Dihedral groups  D₃ · D₄ · D₆
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ── D₃ ──────────────────────────────────────────────────────────────────────
 
 class D3(DihedralGroup):
     '''
@@ -482,31 +433,15 @@ class D3(DihedralGroup):
     =====  ===  ======  =======
     '''
 
+    _labels = {
+        'A1': 'A1',
+        'A2': 'A2',
+        'E': 'E1',
+    }
+
     def __init__(self):
         super().__init__(dihedral_operations(3))
 
-    def all_irrps(self) -> list[str]:
-        return ['A1', 'A2', 'E']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        cls = self._conjugacy_class(op)
-        is_rot = self._is_rotation(op)
-
-        match irrp:
-            case 'A1':
-                return 1.0
-            case 'A2':
-                return 1.0 if is_rot else -1.0
-            case 'E':
-                if cls == 'E':
-                    return 2.0
-                if cls == 'Cn':
-                    return -1.0
-                return 0.0                      # reflections
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-
-# ── D₄ ──────────────────────────────────────────────────────────────────────
 
 class D4(DihedralGroup):
     '''
@@ -525,38 +460,17 @@ class D4(DihedralGroup):
     =====  ===  ===  ======  =======  =======
     '''
 
+    _labels = {
+        'A1': 'A1',
+        'A2': 'A2',
+        'B1': 'B1',
+        'B2': 'B2',
+        'E': 'E1',
+    }
+
     def __init__(self):
         super().__init__(dihedral_operations(4))
 
-    def all_irrps(self) -> list[str]:
-        return ['A1', 'A2', 'B1', 'B2', 'E']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        is_rot = self._is_rotation(op)
-        k = self._rotation_power(op)       # rotation power / axis index (see docstring)
-        cls = self._conjugacy_class(op)
-        match irrp:
-            case 'A1':
-                return 1.0
-            case 'A2':
-                return 1.0 if is_rot else -1.0
-            case 'B1':
-                # +1 on even powers / vertex reflections; −1 on odd powers / edge reflections
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'B2':
-                if is_rot:
-                    return 1.0 if k % 2 == 0 else -1.0
-                else:
-                    return -1.0 if k % 2 == 0 else 1.0   # swapped relative to B₁ for reflections
-            case 'E':
-                if cls == 'E':
-                    return 2.0
-                if cls == 'C2':
-                    return -2.0
-                return 0.0                       # C₄ or any reflection
-        raise ValueError(f"Unknown irreducible representation: {irrp}")
-
-# ── D₆ ──────────────────────────────────────────────────────────────────────
 
 class D6(DihedralGroup):
     '''
@@ -577,36 +491,14 @@ class D6(DihedralGroup):
     =====  ===  ===  ======  ======  =====  =====
     '''
 
+    _labels = {
+        'A1': 'A1',
+        'A2': 'A2',
+        'B1': 'B1',
+        'B2': 'B2',
+        'E1': 'E1',
+        'E2': 'E2',
+    }
+
     def __init__(self):
         super().__init__(dihedral_operations(6))
-
-    def all_irrps(self) -> list[str]:
-        return ['A1', 'A2', 'B1', 'B2', 'E1', 'E2']
-
-    def character(self, irrp: str, op: np.ndarray) -> complex:
-        is_rot = self._is_rotation(op)
-        k = self._rotation_power(op)       # rotation power / axis index
-
-        match irrp:
-            case 'A1':
-                return 1.0
-            case 'A2':
-                return 1.0 if is_rot else -1.0
-            case 'B1':
-                # +1 for even k, −1 for odd k  (both rotations and reflections)
-                return 1.0 if k % 2 == 0 else -1.0
-            case 'B2':
-                if is_rot:
-                    return 1.0 if k % 2 == 0 else -1.0
-                else:
-                    return -1.0 if k % 2 == 0 else 1.0
-            case 'E1':
-                if is_rot:
-                    return 2.0 * np.cos(2 * np.pi * k / self.n)
-                return 0.0
-            case 'E2':
-                if is_rot:
-                    return 2.0 * np.cos(4 * np.pi * k / self.n)
-                return 0.0
-
-        raise ValueError(f"Unknown irreducible representation: {irrp}")

@@ -115,10 +115,10 @@ class TrivialGroup(PointGroup):
             return NotImplemented
         return True
 
-    def all_irrps(self) -> list[str]:
+    def _irrep_labels(self) -> list[str]:
         return ['A']
 
-    def character(self, irrep:str, op:np.ndarray) -> complex:
+    def _character(self, irrep: str, op: np.ndarray) -> complex:
         if irrep == 'A':
             return 1.0
         else:
