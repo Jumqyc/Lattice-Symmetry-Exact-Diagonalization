@@ -454,7 +454,6 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                           const SectorMap& sector, const std::vector<Complex>& characters,
                           const SectorVectors& vectors, int threads)
 {
-    const int n = basis.size();
     const int dim = vectors.vectors();
     const int orbits = sector.orbits;
 
@@ -462,53 +461,33 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
     prepared.reserve(couplings.size());
     for (const CouplingTerm& term : couplings) prepared.push_back(prepare_term(basis, term));
 
-    // The weight of a state in its momentum column, and the weight of the state in
-    // the adapted vector that reaches it.
-    std::vector<Complex> weight(static_cast<std::size_t>(n), Complex{0.0, 0.0});
+    // The weight of a state in its momentum column is a character over the square
+    // root of the orbit, so the whole of it is one number per orbit -- the state
+    // only selects which character.  Keeping an array per state instead costs six
+    // times the memory of the orbit labels themselves and is touched exactly once
+    // per state of the listing.
     std::vector<double> scale(static_cast<std::size_t>(orbits), 1.0);
     for (int label = 0; label < orbits; ++label)
         scale[static_cast<std::size_t>(label)] =
             1.0 / std::sqrt(static_cast<double>(sector.start[label + 1] - sector.start[label]));
-    for (int label = 0; label < orbits; ++label)
-        for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
-            const int state = sector.states[s];
-            weight[static_cast<std::size_t>(state)] =
-                std::conj(characters[sector.translation[state]])
-                * scale[static_cast<std::size_t>(label)];
-        }
 
-    // the adapted vectors as a listing by state: which vectors contain a state and
-    // with what amplitude.  This is the only object of the size of the basis.
-    std::vector<int> start(static_cast<std::size_t>(n) + 1, 0);
+    // The adapted vectors as a listing by orbit: which vectors contain an orbit and
+    // with what coefficient.  A state is in a vector exactly when its orbit is, so
+    // this is the whole structure the scatter needs, and it has one entry per
+    // (orbit, vector) pair -- the same size as V itself, not as the basis.
+    std::vector<std::vector<std::pair<int, Complex>>> holder(static_cast<std::size_t>(orbits));
     for (int index = 0; index < dim; ++index)
         for (int at = vectors.start[index]; at < vectors.start[index + 1]; ++at) {
-            const int label = vectors.columns[at];   // V is indexed by orbit label
+            const int label = vectors.columns[at];
             if (label < 0) continue;
-            for (int s = sector.start[label]; s < sector.start[label + 1]; ++s)
-                ++start[static_cast<std::size_t>(sector.states[s]) + 1];
-        }
-    for (int state = 0; state < n; ++state) start[state + 1] += start[state];
-    std::vector<int> holder(start[n]);
-    std::vector<Complex> value(start[n]);
-    std::vector<int> cursor(start.begin(), start.end() - 1);
-    for (int index = 0; index < dim; ++index)
-        for (int at = vectors.start[index]; at < vectors.start[index + 1]; ++at) {
-            const int label = vectors.columns[at];   // V is indexed by orbit label
-            if (label < 0) continue;
-            const Complex coefficient = vectors.data[at];
-            for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
-                const int state = sector.states[s];
-                const int where = cursor[static_cast<std::size_t>(state)]++;
-                holder[static_cast<std::size_t>(where)] = index;
-                value[static_cast<std::size_t>(where)] =
-                    std::conj(coefficient * weight[static_cast<std::size_t>(state)]);
-            }
+            holder[static_cast<std::size_t>(label)].emplace_back(
+                index, std::conj(vectors.data[at]) * scale[static_cast<std::size_t>(label)]);
         }
 
     // One column of the block at a time: apply the Hamiltonian to the vector and
-    // scatter each image through the listing.  The accumulation is a dense buffer
-    // over the block's columns with a stamp, because a map of the touched columns
-    // costs a node per entry and dominates everything else.
+    // scatter every image through the orbit it belongs to.  The accumulation is a
+    // dense buffer over the block's columns with a stamp, so nothing is sorted and
+    // nothing is allocated per column.
     std::vector<std::vector<std::pair<int, Complex>>> produced(static_cast<std::size_t>(dim));
     parallel_ranges(dim, [&](int begin, int end) {
         std::vector<Complex> summed(static_cast<std::size_t>(dim), Complex{0.0, 0.0});
@@ -525,7 +504,9 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                 const Complex coefficient = vectors.data[at];
                 for (int s = sector.start[label]; s < sector.start[label + 1]; ++s) {
                     const int state = sector.states[s];
-                    const Complex amplitude = coefficient * weight[static_cast<std::size_t>(state)];
+                    const Complex amplitude =
+                        coefficient * std::conj(characters[sector.translation[state]])
+                        * scale[static_cast<std::size_t>(label)];
                     if (amplitude == Complex{0.0, 0.0}) continue;
                     basis.unpack_into(basis.state(state), digits);
                     if (!basis.has_table()) basis.prefix_charges(digits, prefix);
@@ -534,15 +515,18 @@ SparseMatrix sector_block(const Basis& basis, const std::vector<CouplingTerm>& c
                         apply_prepared(basis, term, basis.state(state), digits, prefix, state, images);
                         for (const auto& image : images) {
                             const Complex contribution = image.second * amplitude;
-                            for (int t = start[image.first]; t < start[image.first + 1]; ++t) {
-                                const int target = holder[static_cast<std::size_t>(t)];
+                            const int arrived = sector.orbit[image.first];
+                            if (arrived < 0) continue;
+                            const Complex factor = characters[sector.translation[image.first]];
+                            for (const auto& entry : holder[static_cast<std::size_t>(arrived)]) {
+                                const int target = entry.first;
                                 if (stamp[static_cast<std::size_t>(target)] != index) {
                                     stamp[static_cast<std::size_t>(target)] = index;
                                     summed[static_cast<std::size_t>(target)] = Complex{0.0, 0.0};
                                     touched.push_back(target);
                                 }
                                 summed[static_cast<std::size_t>(target)] +=
-                                    value[static_cast<std::size_t>(t)] * contribution;
+                                    entry.second * factor * contribution;
                             }
                         }
                     }
