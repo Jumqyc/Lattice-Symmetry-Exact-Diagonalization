@@ -79,9 +79,7 @@ class CyclicGroup(PointGroup):
             operations: the rotations of the group, as matrices.
         '''
         self._ops = [np.asarray(op, dtype=float) for op in operations]
-        self._operations = tuple(representation._matrix_to_flat(op) for op in self._ops)
-        self._n = len(self._ops)
-        self.n = self._n
+        self.n = len(self._ops)
 
     def _get_rotation_power(self, op: np.ndarray) -> int:
         '''
@@ -100,25 +98,29 @@ class CyclicGroup(PointGroup):
     def __eq__(self, other):
         if not isinstance(other, CyclicGroup):
             return NotImplemented
-        return self._operations == other._operations
+        return self._key() == other._key()
 
     def __hash__(self):
-        return hash(self._operations)
+        return hash(self._key())
+
+    def _key(self) -> tuple:
+        '''The operations as a hashable value, for comparison.'''
+        return tuple(representation._matrix_to_flat(op) for op in self._ops)
 
     @property
     def order(self) -> int:
         '''The number of operations, *n*.'''
-        return self._n
+        return self.n
 
     def _rotation_power(self, op: np.ndarray) -> int:
         '''
         The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
         '''
         angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
-        return int(round(angle * self._n / (2 * np.pi))) % self._n
+        return int(round(angle * self.n / (2 * np.pi))) % self.n
 
     def all_irrps(self) -> list[str]:
-        return [f'j{j}' for j in range(self._n)]
+        return [f'j{j}' for j in range(self.n)]
 
     def character(self, irrep: str, op: np.ndarray) -> complex:
         '''
@@ -134,7 +136,7 @@ class CyclicGroup(PointGroup):
         '''
         if irrep not in self.all_irrps():
             raise ValueError(f"Unknown irreducible representation: {irrep}")
-        return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self._n)
+        return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self.n)
 
 
 class DihedralGroup(PointGroup):
@@ -154,11 +156,8 @@ class DihedralGroup(PointGroup):
             operations: the rotations and reflections of the group, as matrices.
         '''
         self._ops = [np.asarray(op, dtype=float) for op in operations]
-        self._operations = tuple(representation._matrix_to_flat(op) for op in self._ops)
-        self._rotations = [op for op in self._ops if np.linalg.det(op) > 0]
         self._reflections = [op for op in self._ops if np.linalg.det(op) < 0]
-        self._n = len(self._rotations)
-        self.n = self._n
+        self.n = len(self._ops) - len(self._reflections)
 
     def __iter__(self):
         return iter([op.copy() for op in self._ops])
@@ -166,10 +165,14 @@ class DihedralGroup(PointGroup):
     def __eq__(self, other):
         if not isinstance(other, DihedralGroup):
             return NotImplemented
-        return self._operations == other._operations
+        return self._key() == other._key()
 
     def __hash__(self):
-        return hash(self._operations)
+        return hash(self._key())
+
+    def _key(self) -> tuple:
+        '''The operations as a hashable value, for comparison.'''
+        return tuple(representation._matrix_to_flat(op) for op in self._ops)
 
     @property
     def order(self) -> int:
@@ -186,13 +189,13 @@ class DihedralGroup(PointGroup):
         The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
         '''
         angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
-        return int(round(angle * self._n / (2 * np.pi))) % self._n
+        return int(round(angle * self.n / (2 * np.pi))) % self.n
 
     def all_irrps(self) -> list[str]:
         labels = ['A1', 'A2']
-        if self._n % 2 == 0:
+        if self.n % 2 == 0:
             labels += ['B1', 'B2']
-        return labels + [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
+        return labels + [f'E{j}' for j in range(1, (self.n - 1) // 2 + 1)]
 
     def character(self, irrep: str, op: np.ndarray) -> complex:
         '''
@@ -215,7 +218,7 @@ class DihedralGroup(PointGroup):
                 return 1.0
             if irrep in ('B1', 'B2'):
                 return 1.0 if m % 2 == 0 else -1.0
-            return 2.0 * np.cos(2 * np.pi * int(irrep[1:]) * m / self._n)
+            return 2.0 * np.cos(2 * np.pi * int(irrep[1:]) * m / self.n)
         m = self._rotation_power(self._reflections[0] @ arr)
         if irrep == 'A1':
             return 1.0
