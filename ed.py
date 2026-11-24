@@ -534,24 +534,44 @@ class Model:
             if one_per_star and tuple(k) != tuple(min(_star(self, k))):
                 continue                      # one momentum per star
             little, coset_reps = self.little_group(k)
-            little_ops = list(little)
             for alpha in little.all_irrps():
-                characters = np.zeros(len(self.tr_group) * len(rotations), dtype=complex)
-                for i, t in enumerate(self.tr_group):
-                    t_vec = self.tr_group.translation_vector(t)
-                    for j, r in enumerate(rotations):
-                        value = 0j
-                        for gamma in coset_reps:
-                            # the rotated translation is again a translation, and its
-                            # momentum weight is what the induction multiplies in
-                            weight = np.exp(1j * (self.tr_group.momentum_vector(
-                                k, self.bz_cellvectors) @ (gamma @ t_vec)))
-                            conjugated = gamma @ r @ np.linalg.inv(gamma)
-                            if any(np.allclose(conjugated, h) for h in little_ops):
-                                value += weight * little.character(alpha, conjugated)
-                        characters[i * len(rotations) + j] = value
+                characters = self._induced_character(k, alpha, little, coset_reps, rotations)
                 out[(tuple(k), alpha)] = (len(coset_reps) * little.irrep_dim(alpha), characters)
         return out
+
+    def _induced_character(self, k, alpha, little, coset_reps, rotations) -> NDArray[np.complex128]:
+        '''
+        The induced character of one sector, element by element.
+
+        Args:
+            k: the momentum label.
+            alpha: the irrep of the little group.
+            little: the little group.
+            coset_reps: representatives of its right cosets in the point group.
+            rotations: the operations of the point group.
+        Returns:
+            The character of ``(k, alpha)`` on every element ``(t, r)``, indexed by
+            ``translation * |G_pt| + rotation``.
+
+        The formula is ``sum_gamma chi_k(gamma t) chi~_alpha(gamma r gamma^-1)``:
+        the induction sums over the cosets, the momentum enters through the character
+        of the rotated translation, and the little group's character is extended by
+        zero outside the little group.
+        '''
+        little_ops = list(little)
+        characters = np.zeros(len(self.tr_group) * len(rotations), dtype=complex)
+        for i, t in enumerate(self.tr_group):
+            t_vec = self.tr_group.translation_vector(t)
+            for j, r in enumerate(rotations):
+                value = 0j
+                for gamma in coset_reps:
+                    weight = np.exp(1j * (self.tr_group.momentum_vector(
+                        k, self.bz_cellvectors) @ (gamma @ t_vec)))
+                    conjugated = gamma @ r @ np.linalg.inv(gamma)
+                    if any(np.allclose(conjugated, h) for h in little_ops):
+                        value += weight * little.character(alpha, conjugated)
+                characters[i * len(rotations) + j] = value
+        return characters
 
     def check_symmetry(self) -> None:
         '''
