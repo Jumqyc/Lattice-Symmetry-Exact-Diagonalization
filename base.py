@@ -29,9 +29,20 @@ class PointGroup(ABC):
     '''
     A finite group, described only through its elements and their characters.
 
-    Subclasses provide the operations, their irreps and their characters.  The
-    geometry of the lattice and the decomposition of the momenta are handled by
-    the lattice layer, not here.
+    The interface is three methods -- the operations, the irrep labels, and the
+    character of one irrep at one operation -- because that is all the
+    decomposition asks: it iterates the group, sums characters, and never needs to
+    know which group it has.  The quantities that follow from the interface --
+    the identity, the dimension of an irrep -- are computed here, once.
+
+    Three implementations answer it, and they answer it for different reasons.
+    :class:`representation.TrivialGroup` is the default, the group that says the
+    model has no point symmetry.  :class:`representation.ExplicitPointGroup` reads
+    the table off an operation list, which is the only thing possible for the little
+    groups: they are subgroups of the point group at one momentum, so they are not
+    any of the named groups.  The named ones in ``geometry/2dsym.py`` override the
+    table to keep their own labels and conventions.  A model holds one of these
+    three and never learns which.
     '''
 
     @abstractmethod

@@ -151,6 +151,11 @@ class ExplicitPointGroup(PointGroup):
     The operations must form a group.  This is checked on construction, because
     a set of matrices that is not closed silently produces a meaningless
     character table and therefore meaningless sectors.
+
+    The table here is the generic one and its labels are the generic ones.  The
+    named groups of ``geometry/2dsym.py`` are explicit groups too, and they
+    override the table so that the irreps carry the labels a user writes down --
+    which is the only difference between them and this class.
     '''
 
     def __init__(self, operations: list[np.ndarray]):
