@@ -127,106 +127,86 @@ class TrivialGroup(PointGroup):
                      .reshape(self._shape)])
 
 
-class ExplicitPointGroup(PointGroup):
+def _validated(operations: list[np.ndarray]) -> list[np.ndarray]:
     '''
-    A point group given by its list of operation matrices, of one of the two kinds
-    a finite subgroup of O(2) can be.
+    The operations, once they are known to be a finite subgroup of O(2).
 
-    This class holds only what such a list has in common: it must be orthogonal and
-    closed, and it must be cyclic or dihedral.  Which kind it is, is decided on
-    construction, and the table is left to the kind -- :class:`CyclicGroup` and
-    :class:`DihedralGroup` write their own, because the two have nothing in common
-    but the construction.  A list that is neither is refused here rather than given
-    a table it does not have.
-
-    Use :func:`group_of` to build one from a list.
+    Args:
+        operations: the operations, as matrices.
+    Returns:
+        The distinct operations, in the order of first appearance.
+    Raises:
+        ValueError: if the list is empty, is not two-dimensional, is not orthogonal,
+            or is not closed under multiplication -- a set that is not a group
+            silently produces a meaningless character table and therefore
+            meaningless sectors, so it is refused here.
     '''
-
-    def __init__(self, operations: list[np.ndarray]):
-        ops = _unique_ops(operations)
-        if not ops:
-            raise ValueError("A point group needs at least one operation.")
-        shape = ops[0].shape
-        if shape != (2, 2):
-            raise ValueError(
-                "This module knows the finite subgroups of O(2) only -- cyclic and "
-                f"dihedral -- and got operations of shape {shape}.")
-        for op in ops:
-            if not np.allclose(op @ op.T, np.eye(2), atol=_OP_TOL):
-                raise ValueError("The operations must be orthogonal matrices.")
-
-        # closure: every product of two operations must be one of them
-        keys = {_op_key(op) for op in ops}
-        for a in ops:
-            for b in ops:
-                if _op_key(a @ b) not in keys:
-                    raise ValueError(
-                        "The supplied operations do not form a group: "
-                        f"{a.tolist()} * {b.tolist()} is missing.")
-
-        self._shape = shape
-        self._operations: tuple[tuple[float, ...], ...] = tuple(
-            _matrix_to_flat(op) for op in ops)
-        self._ops = ops
-        self._rotations = [op for op in ops if np.linalg.det(op) > 0]
-        self._reflections = [op for op in ops if np.linalg.det(op) < 0]
-        self._n = len(self._rotations)
-        if len(self._reflections) not in (0, self._n):
-            raise ValueError(
-                f"{self._n} rotations and {len(self._reflections)} reflections "
-                "are neither cyclic nor dihedral.")
-
-    @property
-    def order(self) -> int:
-        '''The number of operations, ``n`` for a cyclic group and ``2n`` for a
-        dihedral one.'''
-        return len(self._ops)
-
-    def __hash__(self):
-        return hash((self._shape, self._operations))
-
-    def __eq__(self, other):
-        if not isinstance(other, ExplicitPointGroup):
-            return NotImplemented
-        return (self._shape == other._shape
-                and self._operations == other._operations)
-
-    def __iter__(self):
-        return iter([op.copy() for op in self._ops])
-
-    # ── operations ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_rotation(op: np.ndarray) -> bool:
-        '''Return True if *op* is a proper rotation (det > 0).'''
-        return np.linalg.det(np.asarray(op, dtype=float)) > 0
-
-    def _rotation_power(self, op: np.ndarray) -> int:
-        '''
-        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
-
-        Args:
-            op: a rotation of the group.
-        Returns:
-            The power, as an integer in ``[0, n)``.
-        '''
-        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
-        return int(round(angle * self._n / (2 * np.pi))) % self._n
-
-    def all_irrps(self) -> list[str]:
-        raise NotImplementedError("the kind of group provides the table")
-
-    def character(self, irrep: str, op: np.ndarray) -> complex:
-        raise NotImplementedError("the kind of group provides the table")
+    ops = _unique_ops(operations)
+    if not ops:
+        raise ValueError("A point group needs at least one operation.")
+    shape = ops[0].shape
+    if shape != (2, 2):
+        raise ValueError(
+            "This module knows the finite subgroups of O(2) only -- cyclic and "
+            f"dihedral -- and got operations of shape {shape}.")
+    for op in ops:
+        if not np.allclose(op @ op.T, np.eye(2), atol=_OP_TOL):
+            raise ValueError("The operations must be orthogonal matrices.")
+    keys = {_op_key(op) for op in ops}
+    for a in ops:
+        for b in ops:
+            if _op_key(a @ b) not in keys:
+                raise ValueError(
+                    "The supplied operations do not form a group: "
+                    f"{a.tolist()} * {b.tolist()} is missing.")
+    return ops
 
 
-class CyclicGroup(ExplicitPointGroup):
+class CyclicGroup(PointGroup):
     '''
-    A cyclic group C*n*: *n* rotations, no reflection.
+    A cyclic group C*n*: *n* rotations and nothing else.
 
     Its irreps are *n* one-dimensional ones, ``'j0' … 'j{n-1}'``, with
     ``χ_j(r^m) = exp(2πi j m / n)``.
     '''
+
+    def __init__(self, operations: list[np.ndarray]):
+        '''
+        Args:
+            operations: the operations of the group, as matrices.
+        Raises:
+            ValueError: if the list is not a finite subgroup of O(2), or if it
+                contains a reflection.
+        '''
+        self._ops = _validated(operations)
+        self._operations = tuple(_matrix_to_flat(op) for op in self._ops)
+        self._n = len(self._ops)
+        if any(np.linalg.det(op) < 0 for op in self._ops):
+            raise ValueError("A cyclic group has rotations only, and this list has a "
+                             "reflection; a group with reflections is dihedral.")
+
+    def __iter__(self):
+        return iter([op.copy() for op in self._ops])
+
+    def __eq__(self, other):
+        if not isinstance(other, CyclicGroup):
+            return NotImplemented
+        return self._operations == other._operations
+
+    def __hash__(self):
+        return hash(self._operations)
+
+    @property
+    def order(self) -> int:
+        '''The number of operations, *n*.'''
+        return self._n
+
+    def _rotation_power(self, op: np.ndarray) -> int:
+        '''
+        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
+        '''
+        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
+        return int(round(angle * self._n / (2 * np.pi))) % self._n
 
     def all_irrps(self) -> list[str]:
         return [f'j{j}' for j in range(self._n)]
@@ -248,7 +228,7 @@ class CyclicGroup(ExplicitPointGroup):
         return np.exp(2j * np.pi * int(irrep[1:]) * self._rotation_power(op) / self._n)
 
 
-class DihedralGroup(ExplicitPointGroup):
+class DihedralGroup(PointGroup):
     '''
     A dihedral group D*n*: *n* rotations and *n* reflections.
 
@@ -258,6 +238,52 @@ class DihedralGroup(ExplicitPointGroup):
     reflection of the list; its character is ``(-1)^m`` for ``B1`` and ``-(-1)^m`` for
     ``B2``.
     '''
+
+    def __init__(self, operations: list[np.ndarray]):
+        '''
+        Args:
+            operations: the operations of the group, as matrices.
+        Raises:
+            ValueError: if the list is not a finite subgroup of O(2), or if the
+                number of reflections differs from the number of rotations.
+        '''
+        self._ops = _validated(operations)
+        self._operations = tuple(_matrix_to_flat(op) for op in self._ops)
+        self._rotations = [op for op in self._ops if np.linalg.det(op) > 0]
+        self._reflections = [op for op in self._ops if np.linalg.det(op) < 0]
+        self._n = len(self._rotations)
+        if len(self._reflections) != self._n:
+            raise ValueError(
+                f"{self._n} rotations and {len(self._reflections)} reflections are not "
+                "dihedral.")
+
+    def __iter__(self):
+        return iter([op.copy() for op in self._ops])
+
+    def __eq__(self, other):
+        if not isinstance(other, DihedralGroup):
+            return NotImplemented
+        return self._operations == other._operations
+
+    def __hash__(self):
+        return hash(self._operations)
+
+    @property
+    def order(self) -> int:
+        '''The number of operations, *2n*.'''
+        return len(self._ops)
+
+    @staticmethod
+    def _is_rotation(op: np.ndarray) -> bool:
+        '''Return True if *op* is a proper rotation (det > 0).'''
+        return np.linalg.det(np.asarray(op, dtype=float)) > 0
+
+    def _rotation_power(self, op: np.ndarray) -> int:
+        '''
+        The power *m* (mod *n*) such that *op* is the rotation by 2πm/n.
+        '''
+        angle = np.arctan2(op[1, 0], op[0, 0]) % (2 * np.pi)
+        return int(round(angle * self._n / (2 * np.pi))) % self._n
 
     def all_irrps(self) -> list[str]:
         labels = ['A1', 'A2']
@@ -299,7 +325,7 @@ class DihedralGroup(ExplicitPointGroup):
         return 0.0
 
 
-def group_of(operations: list[np.ndarray]) -> ExplicitPointGroup:
+def group_of(operations: list[np.ndarray]) -> PointGroup:
     '''
     The group a list of operations is, as the kind it turns out to be.
 
@@ -308,9 +334,15 @@ def group_of(operations: list[np.ndarray]) -> ExplicitPointGroup:
     Returns:
         A :class:`CyclicGroup` or a :class:`DihedralGroup`.
     Raises:
-        ValueError: if the list is not a group, is not orthogonal, is not
-            two-dimensional, or is neither cyclic nor dihedral.
+        ValueError: if the list is not a finite subgroup of O(2), or is neither
+            cyclic nor dihedral.
     '''
-    probe = ExplicitPointGroup(operations)      # validates and classifies
-    kind = CyclicGroup if not probe._reflections else DihedralGroup
-    return kind(operations)
+    ops = _validated(operations)                 # refuses anything that is not a group
+    reflections = sum(1 for op in ops if np.linalg.det(op) < 0)
+    if reflections == 0:
+        return CyclicGroup(ops)
+    if reflections == len(ops) - reflections:
+        return DihedralGroup(ops)
+    raise ValueError(
+        f"{len(ops) - reflections} rotations and {reflections} reflections are neither "
+        "cyclic nor dihedral.")

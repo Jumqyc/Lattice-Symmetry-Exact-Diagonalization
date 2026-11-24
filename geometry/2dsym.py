@@ -4,8 +4,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
-from base import PointGroup
-from representation import CyclicGroup as _CyclicKind, DihedralGroup as _DihedralKind
+import representation
 
 
 def rotation(rad: float) -> np.ndarray:
@@ -41,7 +40,7 @@ def reflection(rad: float) -> np.ndarray:
 # Cyclic groups  C₂ · C₃ · C₄ · C₆
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class CyclicGroup(_CyclicKind):
+class CyclicGroup(representation.CyclicGroup):
     '''
     Base for cyclic groups Cₙ (order *n*).
 
@@ -222,7 +221,7 @@ class C6(CyclicGroup):
 # Dihedral groups  D₃ · D₄ · D₆
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class DihedralGroup(_DihedralKind):
+class DihedralGroup(representation.DihedralGroup):
     '''
     Base for dihedral groups Dₙ (order 2*n*).
 

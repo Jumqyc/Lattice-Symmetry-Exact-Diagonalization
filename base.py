@@ -35,14 +35,15 @@ class PointGroup(ABC):
     know which group it has.  The quantities that follow from the interface --
     the identity, the dimension of an irrep -- are computed here, once.
 
-    Three implementations answer it, and they answer it for different reasons.
-    :class:`representation.TrivialGroup` is the default, the group that says the
-    model has no point symmetry.  :func:`representation.group_of` reads the table off
-    an operation list, which is the only thing possible for the little groups: they
-    are subgroups of the point group at one momentum, so they are not any of the
-    named groups.  The named ones in ``geometry/2dsym.py`` override the
-    table to keep their own labels and conventions.  A model holds one of these
-    three and never learns which.
+    The implementations answer it in two ways.  :class:`representation.TrivialGroup`
+    is the default, the group that says the model has no point symmetry, and
+    :class:`representation.CyclicGroup` / :class:`representation.DihedralGroup` are
+    the two kinds a finite subgroup of the plane can be, each with its own table;
+    :func:`representation.group_of` builds the kind a list of operations turns out to
+    be, which is what the little groups are, since they are subgroups of the point
+    group at one momentum rather than any of the named groups.  The named ones in
+    ``geometry/2dsym.py`` inherit those two and override the table to keep their own
+    labels and conventions.  A model holds one of these and never learns which.
     '''
 
     @abstractmethod
