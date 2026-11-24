@@ -125,7 +125,12 @@ class Model:
                 None.  An element is either a bare ``(d, d)`` rotation about the
                 origin, or a full ``LatticeAction`` -- the latter is how a glide
                 plane or a screw axis enters, since those are a rotation plus a
-                fractional translation.
+                fractional translation.  Any finite subgroup of the orthogonal
+                group of the plane can be given as an
+                :class:`representation.ExplicitPointGroup`, which reads its
+                character table off the operation list; that is also what the
+                little groups are, since they are subgroups rather than one of
+                the named groups.
             MAX_EXTENSION: half-width of the periodically extended copy kept
                 for plotting.
             orbital_mixing: per species, the local action of a rotation on that

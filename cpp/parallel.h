@@ -25,6 +25,14 @@ int worker_count(int tasks, int threads = 0);
  *         over the columns of a product without any shared mutable state.  The
  *         ranges are contiguous and handed out in order, which keeps the writes
  *         cache-friendly.
+ *
+ *         The threads are created per call, and on this machine creating and
+ *         joining sixteen of them costs about 540 microseconds -- far more than the
+ *         work of one phase of a recurrence, which is why the recurrence uses the
+ *         pool below instead.  The layer is written here rather than taken from the
+ *         standard library because the standard parallel algorithms need a backend
+ *         (TBB with libstdc++), and because the same pool has to serve both the
+ *         recurrence and the product so the two do not oversubscribe the machine.
  * @short Run body on contiguous ranges covering [0, tasks), in fresh threads.
  */
 void parallel_ranges(int tasks, const std::function<void(int, int)>& body,

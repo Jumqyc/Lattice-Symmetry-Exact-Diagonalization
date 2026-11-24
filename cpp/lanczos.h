@@ -15,6 +15,14 @@ namespace ed {
  *         lattice stops being affordable.
  * @short A matrix-vector product.
  */
+/**
+ * @detail What the recurrence needs is the product, not the matrix: a sector whose
+ *         block does not fit is still solved, because its product exists even when
+ *         it cannot be written down.  A sparse matrix is one source of a product --
+ *         the overload at the end of this header builds the closure from it -- and
+ *         sector_apply_block is the other.
+ * @short The product of an operator with a vector.
+ */
 using MatrixVector = std::function<std::vector<Complex>(const std::vector<Complex>&)>;
 
 /**
