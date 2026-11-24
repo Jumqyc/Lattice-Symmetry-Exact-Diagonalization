@@ -216,6 +216,11 @@ class ExplicitPointGroup(PointGroup):
         labels += [f'E{j}' for j in range(1, (self._n - 1) // 2 + 1)]
         return labels
 
+    @staticmethod
+    def _is_rotation(op: np.ndarray) -> bool:
+        '''Return True if *op* is a proper rotation (det > 0).'''
+        return np.linalg.det(np.asarray(op, dtype=float)) > 0
+
     def _rotation_power(self, op: np.ndarray) -> int:
         '''
         Power m (mod n) such that ``op = rotation(2π/n)^m``.

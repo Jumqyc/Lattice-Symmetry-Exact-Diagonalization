@@ -38,41 +38,10 @@ def reflection(rad: float) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Internal base class for 2D point groups
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class _Generic2DPointGroup(ExplicitPointGroup):
-    '''
-    Base class for 2D point groups that store their operations explicitly.
-
-    The operations, the generic character table, the little-group
-    decomposition and the momenta are inherited from
-    :class:`base.ExplicitPointGroup`; this class only adds the helpers that
-    named groups use to look an operation up in their own character table.
-
-    Iteration yields ``np.ndarray`` matrices.
-    '''
-
-    # ── identifying operations ───────────────────────────────────────────
-
-    @staticmethod
-    def _is_rotation(op: np.ndarray) -> bool:
-        '''Return True if *op* is a proper rotation (det > 0).'''
-        return np.linalg.det(op) > 0
-
-    def _find_op_index(self, op: np.ndarray) -> int:
-        '''Return the index in ``self._operations`` that matches *op*.'''
-        for i, g in enumerate(self):
-            if np.allclose(g, op):
-                return i
-        raise ValueError(f"Operation {op} not found in group.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Cyclic groups  C₂ · C₃ · C₄ · C₆
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class CyclicGroup(_Generic2DPointGroup):
+class CyclicGroup(ExplicitPointGroup):
     '''
     Base for cyclic groups Cₙ (order *n*).
 
@@ -253,7 +222,7 @@ class C6(CyclicGroup):
 # Dihedral groups  D₃ · D₄ · D₆
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class DihedralGroup(_Generic2DPointGroup):
+class DihedralGroup(ExplicitPointGroup):
     '''
     Base for dihedral groups Dₙ (order 2*n*).
 
