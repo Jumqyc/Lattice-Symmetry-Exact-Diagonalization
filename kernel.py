@@ -185,32 +185,8 @@ def to_scipy(matrix) -> sp.csr_matrix:
                          shape=(matrix.rows, matrix.cols))
 
 
-def columns_to_scipy(columns, states: int) -> sp.csc_matrix:
-    '''
-    A set of adapted columns as a scipy matrix.
-
-    Args:
-        columns: ``_edkern.SparseColumns``; compressed by column.
-        states: number of rows, i.e. size of the computational basis.
-    Returns:
-        The ``(states, columns.columns())`` matrix.
-    '''
-    return sp.csc_matrix((columns.data, columns.indices, columns.indptr),
-                         shape=(states, columns.columns()))
 
 
-def vectors_to_scipy(vectors, columns: int) -> sp.csc_matrix:
-    '''
-    One isotypic basis as a scipy matrix.
-
-    Args:
-        vectors: ``_edkern.SectorVectors``; compressed by vector.
-        columns: number of rows, i.e. size of the sector.
-    Returns:
-        The ``(columns, vectors.vectors())`` matrix.
-    '''
-    return sp.csc_matrix((vectors.data, vectors.columns, vectors.start),
-                         shape=(columns, vectors.vectors()))
 
 
 # ── the sector decomposition ──────────────────────────────────────────────────

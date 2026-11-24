@@ -63,10 +63,12 @@ repository root:
 .venv/bin/python test/test_heisenberg.py     # momentum sectors against direct ED
 .venv/bin/python test/test_pointgroup.py     # little groups, sectors, labels, orbitals
 .venv/bin/python test/test_induced_char.py   # induced characters, one momentum per star
-.venv/bin/python test/test_cgroup.py         # kernel character tables vs Python
 .venv/bin/python test/test_chilbert.py       # kernel basis, actions, momentum basis
-.venv/bin/python test/test_csector.py        # kernel Hamiltonian, sectors, Lanczos
+.venv/bin/python test/test_csector.py        # sector blocks, their spectra, Lanczos
+.venv/bin/python test/test_spin_one.py       # AKLT: spin one, a bulk singlet, edge states
 ```
 
-`test_cgroup.py`, `test_chilbert.py` and `test_csector.py` skip themselves when
-the kernel is not built.
+`test_chilbert.py` and `test_csector.py` skip themselves when the kernel is not
+built.  `bench/state.py --check` compares a fingerprint of four models (per sector
+the shape, non-zeros, trace and norm of the block, and the lowest levels) in about
+twelve seconds, which is what to run while changing the kernels.
