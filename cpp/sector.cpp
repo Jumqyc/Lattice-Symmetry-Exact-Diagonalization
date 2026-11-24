@@ -53,38 +53,6 @@ std::vector<std::vector<int>> column_orbits(const std::vector<PhasedPermutation>
 
 }  // namespace
 
-PhasedPermutation sector_action(const SparseColumns& columns, const Basis& basis,
-                                const MonomialAction& action)
-{
-    const int n = basis.size();
-    // state -> column of the sector; every state belongs to exactly one column
-    std::vector<int> column_of(n, -1);
-    for (int c = 0; c < columns.columns(); ++c)
-        for (int a = columns.indptr[c]; a < columns.indptr[c + 1]; ++a)
-            column_of[columns.indices[a]] = c;
-
-    PhasedPermutation out;
-    out.act.resize(columns.columns());
-    out.phase.resize(columns.columns());
-    for (int c = 0; c < columns.columns(); ++c) {
-        const int probe = columns.indices[columns.indptr[c]];
-        const Complex probe_amplitude = columns.data[columns.indptr[c]];
-        const auto moved = apply(basis, action, basis.state(probe));
-        const int image = basis.index(moved.first);
-        if (image < 0 || column_of[image] < 0)
-            throw std::runtime_error("the operation leaves the momentum sector");
-        const int target = column_of[image];
-        // coefficient of the image in its own column
-        Complex image_amplitude{0.0, 0.0};
-        for (int a = columns.indptr[target]; a < columns.indptr[target + 1]; ++a)
-            if (columns.indices[a] == image) image_amplitude = columns.data[a];
-        if (std::abs(image_amplitude) < 1e-14)
-            throw std::runtime_error("the image of a probe has no amplitude");
-        out.act[c] = target;
-        out.phase[c] = probe_amplitude * moved.second / image_amplitude;
-    }
-    return out;
-}
 
 SectorVectors isotypic_basis(const std::vector<PhasedPermutation>& actions,
                              const std::vector<Complex>& characters,

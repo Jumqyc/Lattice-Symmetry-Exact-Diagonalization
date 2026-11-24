@@ -196,20 +196,6 @@ struct SparseColumns {
     int columns() const { return column_count; }
 };
 
-/**
- * @param basis the computational basis.
- * @param translations the site action of each translation, in preimage form.
- * @param characters chi_k(t) of each translation, for the momentum *k*.
- * @detail Orbits are walked once; the representative is the smallest packed
- *         state of the orbit, and the projection is taken *from the
- *         representative*, not from whichever state started the walk, so the
- *         global phase of every column matches the Python implementation.
- *         Orbits whose projected norm vanishes (the momentum is incompatible
- *         with the translation stabiliser of the state) are dropped.
- * @short The momentum-adapted orthonormal basis of one momentum sector.
- */
-SparseColumns momentum_basis(const Basis& basis,
-                             const std::vector<MonomialAction>& translations,
-                             const std::vector<Complex>& characters, int threads = 0);
+
 
 }  // namespace ed

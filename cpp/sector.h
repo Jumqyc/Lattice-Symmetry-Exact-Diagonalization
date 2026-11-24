@@ -23,20 +23,7 @@ struct PhasedPermutation {
     std::vector<Complex> phase;        // coefficient of that column
 };
 
-/**
- * @param columns the momentum-adapted basis of one sector.
- * @param basis the computational basis.
- * @param action one symmetry operation on the computational basis.
- * @detail One state of every column is taken as a probe: its image lies in the
- *         column the probe is sent to, so comparing the coefficient of the probe
- *         in its own column with the coefficient of its image in the image
- *         column gives the phase without forming any matrix.
- * @short Action of one operation on a momentum sector.
- * @return act and phase, one entry per column.
- * @throws std::runtime_error if the image of a column is outside the sector.
- */
-PhasedPermutation sector_action(const SparseColumns& columns, const Basis& basis,
-                                const MonomialAction& action);
+
 
 /**
  * @detail The isotypic component of one irrep is a direct sum over the orbits of
@@ -108,10 +95,11 @@ struct SectorMap {
 /**
  * @param basis the computational basis.
  * @param translations one action per translation, in character order.
- * @detail Walks the basis once, the same way the momentum basis does, so the
- *         orbits and their representatives match what momentum_basis would have
- *         produced -- the representative is the smallest word of its orbit, which
- *         is what fixes the phases.
+ * @detail Walks the basis once: every orbit is collected, its representative is
+ *         the smallest word in it, and the translation that reaches each of its
+ *         states is recorded -- the representative is what fixes the column's
+ *         phase, since the weight of a state is the character over the square root
+ *         of the orbit's size.
  * @short Label the translation orbits of a momentum sector.
  */
 SectorMap sector_map(const Basis& basis, const std::vector<MonomialAction>& translations);

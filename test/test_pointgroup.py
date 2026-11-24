@@ -281,13 +281,17 @@ def test_dimensions_from_characters(tol: float = 1e-8, verbose: bool = True) -> 
         for k in m.tr_group.all_momenta():
             lg, _ = m.little_group(k)
             ops = list(lg)
-            basis, columns = kernel.momentum_sector(m, k)
-            if columns.columns() == 0:
+            basis = kernel.basis_of(m, None)
+            translations = kernel.translations(m)
+            orbits = _edkern.sector_map(basis, translations)
+            characters = [complex(m.tr_group.character(k, t)) for t in m.tr_group]
+            sector = _edkern.sector_subset(orbits, characters)
+            if sector.orbits == 0:
                 continue
             traces = {}
             for op in ops:
                 action = kernel.monomial_of(m, m._action_for(op))
-                perm = _edkern.sector_action(columns, basis, action)
+                perm = _edkern.action_on_orbits(basis, sector, action, characters, translations)
                 count = len(perm.act)
                 traces[tuple(np.asarray(op, dtype=float).ravel().round(8))] = float(np.real(
                     np.sum([perm.phase[x] for x in range(count) if perm.act[x] == x])))

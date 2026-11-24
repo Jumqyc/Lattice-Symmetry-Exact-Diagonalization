@@ -44,9 +44,6 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("data", &ed::SparseColumns::data)
         .def("columns", &ed::SparseColumns::columns);
 
-    m.def("momentum_basis", &ed::momentum_basis,
-          py::call_guard<py::gil_scoped_release>(), py::arg("basis"), py::arg("translations"),
-          py::arg("characters"), py::arg("threads") = 0, "Momentum-adapted orthonormal basis of one sector");
 
     py::class_<ed::SparseMatrix>(m, "SparseMatrix")
         .def_readonly("rows", &ed::SparseMatrix::rows)
@@ -70,9 +67,6 @@ PYBIND11_MODULE(_edkern, m)
         .def_readonly("act", &ed::PhasedPermutation::act)
         .def_readonly("phase", &ed::PhasedPermutation::phase);
 
-    m.def("sector_action", &ed::sector_action,
-          py::call_guard<py::gil_scoped_release>(), py::arg("columns"), py::arg("basis"),
-          py::arg("action"), "Action of one operation on a momentum sector");
 
     py::class_<ed::SectorVectors>(m, "SectorVectors")
         .def_readonly("start", &ed::SectorVectors::start)

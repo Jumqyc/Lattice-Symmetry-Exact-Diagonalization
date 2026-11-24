@@ -151,23 +151,6 @@ def hilbert_index(model: 'Model', op) -> int:
     raise ValueError('the operation is not part of the model')
 
 
-def momentum_sector(model: 'Model', k, sztot: Optional[int] = None):
-    '''
-    The momentum-adapted columns of one sector, as the kernel has them.
-
-    Args:
-        model: the model.
-        k: momentum label.
-        sztot: total charge, or None for the whole space.
-    Returns:
-        ``(basis, columns)``: the kernel's ``Basis`` and its ``SparseColumns``.
-        The tests use this to reach the momentum basis without going through
-        the sector decomposition.
-    '''
-    require()
-    basis = basis_of(model, sztot)
-    characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-    return basis, _edkern.momentum_basis(basis, translations(model), characters)
 
 
 # ── sparse results, as scipy matrices ─────────────────────────────────────────

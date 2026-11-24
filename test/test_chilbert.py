@@ -145,6 +145,13 @@ def test_action(model: Model, Sztot, label: str, verbose: bool = True) -> bool:
     return ok
 
 
+def to_scipy(matrix):
+    '''A kernel CSR matrix as a scipy matrix.'''
+    import scipy.sparse as sp
+    return sp.csr_matrix((matrix.data, matrix.indices, matrix.indptr),
+                         shape=(matrix.rows, matrix.cols))
+
+
 def test_momentum(model: Model, Sztot, label: str, tol: float = 1e-10,
                   verbose: bool = True) -> bool:
     '''
@@ -158,15 +165,23 @@ def test_momentum(model: Model, Sztot, label: str, tol: float = 1e-10,
     basis = _edkern.Basis(model.size_of_unit_cell, model.physical_dim,
                           list(model.local_charge), -1 if Sztot is None else Sztot)
     translations = [translation_action(model, t) for t in model.tr_group]
+    orbits = _edkern.sector_map(basis, translations)
     norm_error = 0.0
     diagonal_error = 0.0
     columns_total = 0
     for k in model.tr_group.all_momenta():
         characters = [complex(model.tr_group.character(k, t)) for t in model.tr_group]
-        columns = _edkern.momentum_basis(basis, translations, characters)
-        columns_total += columns.columns()
-        stride = max(1, columns.columns() // 4)
-        for c in range(columns.columns()):
+        sector = _edkern.sector_subset(orbits, characters)
+        if sector.orbits == 0:
+            continue
+        identity = _edkern.PhasedPermutation(list(range(sector.orbits)),
+                                            [1.0 + 0.0j] * sector.orbits)
+        vectors = _edkern.isotypic_basis([identity], [1.0 + 0.0j], 1, sector.orbits)
+        dense_columns = to_scipy(_edkern.sector_basis(basis, sector, characters, vectors))
+        columns = dense_columns.tocsc()
+        columns_total += columns.shape[1]
+        stride = max(1, columns.shape[1] // 4)
+        for c in range(columns.shape[1]):
             support = list(range(columns.indptr[c], columns.indptr[c + 1]))
             norm = sum(abs(complex(columns.data[a])) ** 2 for a in support)
             norm_error = max(norm_error, abs(norm - 1.0))
