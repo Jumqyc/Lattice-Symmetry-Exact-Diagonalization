@@ -176,6 +176,7 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
  * @param basis the computational basis.
  * @param sector the orbit labels of a momentum sector.
  * @param action one band of the little group, as a monomial action on states.
+ * @param characters the character of the momentum at every translation.
  * @detail The action of a little-group element on the *orbits*: the label a state
  *         belongs to is taken to the label its image belongs to, with the phase the
  *         action gives it.  The phase is the same for every state of an orbit,
@@ -184,7 +185,9 @@ std::vector<Complex> sector_apply(const Basis& basis, const std::vector<Coupling
  * @short One little-group element acting on the orbit labels.
  */
 PhasedPermutation action_on_orbits(const Basis& basis, const SectorMap& sector,
-                                   const MonomialAction& action);
+                                   const MonomialAction& action,
+                                   const std::vector<Complex>& characters,
+                                   const std::vector<MonomialAction>& translations);
 
 /**
  * @param basis the computational basis.

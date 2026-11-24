@@ -584,8 +584,11 @@ SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& chara
 }
 
 PhasedPermutation action_on_orbits(const Basis& basis, const SectorMap& sector,
-                                   const MonomialAction& action)
+                                   const MonomialAction& action,
+                                   const std::vector<Complex>& characters,
+                                   const std::vector<MonomialAction>& translations)
 {
+    const int groups = static_cast<int>(translations.size());
     PhasedPermutation out;
     out.act.assign(static_cast<std::size_t>(sector.orbits), 0);
     out.phase.assign(static_cast<std::size_t>(sector.orbits), Complex{1.0, 0.0});
@@ -597,7 +600,25 @@ PhasedPermutation action_on_orbits(const Basis& basis, const SectorMap& sector,
             throw std::runtime_error("a little-group element left the basis; the sector is "
                                      "inconsistent");
         out.act[label] = sector.orbit[target];
-        out.phase[label] = moved.second;
+        // The phase is not just the one the action gives the representative: the
+        // column of the target is normalised with the character of the translation
+        // that reaches each of its states, and the action moves the representative
+        // by a translation of its own.  The factor is the character of that
+        // translation; the conjugate is what a first attempt used, and it agrees
+        // only at zero momentum, where every character is one.
+        const int arrived = out.act[label];
+        Complex translation_phase{0.0, 0.0};
+        if (arrived >= 0) {
+            for (int g = 0; g < groups; ++g) {
+                const auto image = apply(basis, translations[g],
+                                         basis.state(sector.representative[arrived])).first;
+                if (image == moved.first) {
+                    translation_phase = characters[g];
+                    break;
+                }
+            }
+        }
+        out.phase[label] = moved.second * translation_phase;
     }
     return out;
 }

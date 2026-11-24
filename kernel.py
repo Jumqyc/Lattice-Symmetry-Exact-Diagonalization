@@ -424,12 +424,13 @@ def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
             irreps = [('A', 1, [1.0 + 0.0j])]
         else:
             actions = [_edkern.action_on_orbits(
-                basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]))
-                for op in ops]
+                basis, sector, monomial_of(model, model.hilbert[hilbert_index(model, op)]),
+                characters, translations) for op in ops]
             irreps = [(alpha, little.irrep_dim(alpha),
                        [little.character(alpha, op) for op in ops])
                       for alpha in little.all_irrps()]
-        flip = (_edkern.action_on_orbits(basis, sector, spin) if spin_flip else None)
+        flip = (_edkern.action_on_orbits(basis, sector, spin, characters, translations)
+                if spin_flip else None)
         for alpha, dim, chars in irreps:
             for parity in ((None,) if not spin_flip else (1, -1)):
                 vectors = _isotypic(actions, chars, flip, parity, dim, sector.orbits, threads)

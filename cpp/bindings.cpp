@@ -87,6 +87,8 @@ PYBIND11_MODULE(_edkern, m)
           py::arg("couplings"), py::arg("columns"), py::arg("threads") = 0,
           "The Hamiltonian in a momentum-adapted basis, term by term");
     py::class_<ed::SectorMap>(m, "SectorMap")
+        .def_readonly("representative", &ed::SectorMap::representative,
+                      "the packed state of every orbit")
         .def_readonly("orbits", &ed::SectorMap::orbits,
                       "number of translation orbits in the sector")
         .def("__len__", [](const ed::SectorMap& map) { return map.orbits; });
@@ -96,7 +98,8 @@ PYBIND11_MODULE(_edkern, m)
     m.def("sector_subset", &ed::sector_subset, py::arg("sector"), py::arg("characters"),
           "The same labels restricted to one momentum");
     m.def("action_on_orbits", &ed::action_on_orbits, py::arg("basis"),
-          py::arg("sector"), py::arg("action"),
+          py::arg("sector"), py::arg("action"), py::arg("characters"),
+          py::arg("translations"),
           "One little-group element acting on the orbit labels");
     m.def("sector_apply_block", &ed::sector_apply_block,
           py::call_guard<py::gil_scoped_release>(), py::arg("basis"),
