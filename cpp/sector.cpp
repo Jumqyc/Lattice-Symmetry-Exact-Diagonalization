@@ -442,12 +442,10 @@ std::vector<Complex> sector_apply_block(const Basis& basis,
     if (static_cast<int>(vector.size()) != dim)
         throw std::invalid_argument("the vector does not match the sector");
 
-    // The block is V^T H_k V, so it is applied as three steps: expand the sector
-    // vector onto the orbits, apply the momentum-space product -- which is the one
-    // that already knows how to do it matrix-free, with its accumulators local to
-    // one orbit and therefore safe across threads -- and project back.  V is the
-    // only thing written down, and it is one entry per (orbit, adapted vector),
-    // never anything of the size of the basis.
+    // The block is V^T B^T H B V, applied as three steps: expand the sector vector
+    // onto the orbits, apply the product over the orbit labels -- whose accumulators
+    // are local to one orbit and therefore safe across threads -- and project back.
+    // V is the only thing written down, one entry per (orbit, adapted vector).
     std::vector<Complex> column(static_cast<std::size_t>(sector.orbits), Complex{0.0, 0.0});
     for (int index = 0; index < dim; ++index) {
         const Complex amplitude = vector[static_cast<std::size_t>(index)];

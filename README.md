@@ -9,11 +9,14 @@ loops over states, columns or group elements is a C++ extension, and the Python
 side builds nothing but the arrays the kernel takes: the sectors are produced by
 the kernel and handed back as sparse matrices.
 
-Every object that scales with the Hilbert space is sparse -- the computational
-basis, the momentum sectors, the adapted vectors, the blocks and the Lanczos
-recurrence itself -- and no dense matrix of the size of a sector is formed
-anywhere in the library.  Dense matrices appear only in the tests, where they are
-the oracle the sparse results are compared against.
+Every object that scales with the Hilbert space is sparse, and the sector is
+carried as one thing: `SectorSpec` holds a sector's key, its dimension and the
+induced character of the whole lattice group, together with the momentum and
+little-group characters that character is built from.  The projection reads only
+that.  Nothing of the size of the basis is written down except the state list and
+the orbit labels; the block of a sector is either built once (`cache=True`) or
+never built (`cache=False`).  Dense matrices appear only in the tests, where they
+are the oracle the sparse results are compared against.
 
 ## Layout
 

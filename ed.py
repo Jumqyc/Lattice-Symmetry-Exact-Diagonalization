@@ -19,7 +19,7 @@ space.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Optional
 
@@ -70,18 +70,6 @@ class SectorSpec:
     characters: NDArray[np.complex128]
     translation_characters: NDArray[np.complex128]
     little_characters: NDArray[np.complex128]
-
-    def project(self, little_characters: NDArray[np.complex128]) -> 'SectorSpec':
-        '''
-        The same sector with the characters of another irrep of the little group.
-
-        Args:
-            little_characters: the characters to use.
-        Returns:
-            A spec with those characters and the dimension that goes with them.
-        '''
-        return replace(self, little_characters=little_characters)
-
 
 @dataclass
 class Sector:

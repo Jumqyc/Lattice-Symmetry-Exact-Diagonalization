@@ -131,7 +131,7 @@ SectorMap sector_subset(const SectorMap& full, const std::vector<Complex>& chara
  *         belongs to, weighted by the character at the translation that reaches
  *         it.  No basis matrix and no sector Hamiltonian is ever formed, which is
  *         what lets a lattice too large for either of them be handled.
- * @short ``H_k vector``, matrix-free, in the space of orbit labels.
+ * @short The product with one momentum's Hamiltonian, in the space of orbit labels.
  */
 std::vector<Complex> sector_apply(const Basis& basis, const std::vector<CouplingTerm>& couplings,
                                   const SectorMap& sector, const std::vector<Complex>& characters,
