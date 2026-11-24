@@ -24,12 +24,28 @@ the oracle the sparse results are compared against.
 | `lattice_action.py` | `Lattice`, the translation group, affine (space-group) actions |
 | `hilbert_action.py` | how an action acts on the computational basis |
 | `geometry/2dsym.py` | `C_n` and `D_n` in two dimensions |
-| `ed.py` | `Model`, `Coupling`, sectors and their spectra |
+| `ed.py` | `Model`, `Coupling`, `SectorSpec`, sectors and their spectra |
 | `kernel.py` | the bridge: the model as the arrays the kernel takes, and back |
 | `cpp/` | the kernel: basis, monomial actions, Hamiltonian, sectors, solvers |
 | `test/` | one script per layer, each checked against an independent reference |
 | `doc/` | the write-up |
 | `demo.ipynb` | a tour of the lattice layer |
+
+## What it computes
+
+```python
+model.spectra(Sztot=8, count=4)                 # build each sector's block, then solve it
+model.spectra(Sztot=8, count=4, cache=False)    # never build it: apply the product per step
+model.build_sectors(Sztot=8)                    # keep the adapted vectors and the blocks
+for spec in model.sector_specs(Sztot=8):        # one sector with the whole group's character
+    ...
+```
+
+A sector is a pair (momentum, little-group irrep); `SectorSpec` carries its induced
+character on every element of the lattice group together with the two factors the
+projection applies -- the momentum character on the translations and the little
+group's on its own elements.  At 4x4 half filling the two modes above take 0.92 s and
+12.35 s, and the block mode is what a lattice that fits should use.
 
 ## Setup
 

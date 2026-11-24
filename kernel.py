@@ -328,13 +328,15 @@ def sector_pieces(model: 'Model', basis, orbits, spin, spin_flip: bool, threads:
 
 
 def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
-            spin_flip: bool = False, threads: int = 0) -> dict:
+            spin_flip: bool = False, threads: int = 0, cache: bool = True) -> dict:
     '''
     The lowest levels of every sector.
 
-    Each sector's block is built directly from its character -- no momentum basis
-    and no momentum-space Hamiltonian -- and diagonalized while the next sector
-    waits, so the memory does not grow with the number of sectors.
+    Each sector's block is either written down once and diagonalized, or never
+    written down and applied to vectors step by step.  The first is what a lattice
+    that fits should do -- the term applications are paid once, and the block is
+    small -- and the second is what a lattice that does not fit has to do, at the
+    price of |G_k| times the term applications per step of the recurrence.
 
     Args:
         model: the model.
@@ -342,6 +344,7 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
         sztot: total charge, or None for the whole space.
         spin_flip: if True, resolve the spin-flip parity as well.
         threads: workers for the kernels; 0 means one per core.
+        cache: build the block of a sector once, or apply it matrix-free.
     Returns:
         A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
     '''
@@ -351,46 +354,23 @@ def spectra(model: 'Model', count: int = 5, sztot: Optional[int] = None,
     orbits = _edkern.sector_map(basis, globals()["translations"](model))
     spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
     out = {}
-    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin, spin_flip,
-                                                           threads, sztot):
-        block = _edkern.sector_block(basis, terms, sector, characters, vectors, threads)
+    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin,
+                                                           spin_flip, threads, sztot):
         asked = min(count, vectors.vectors())
         # a degenerate level needs one vector per copy, and the copies are resolved
         # one cycle at a time, so the budget grows with the request
-        out[spec.key] = np.asarray(
-            _edkern.lowest_eigenvalues(block, asked, max(200, 40 * asked)))
+        budget = max(200, 40 * asked)
+        if cache:
+            block = _edkern.sector_block(basis, terms, sector, characters, vectors, threads)
+            out[spec.key] = np.asarray(_edkern.lowest_eigenvalues(block, asked, budget))
+        else:
+            out[spec.key] = np.asarray(_edkern.lowest_eigenvalues_free(
+                lambda vector: _edkern.sector_apply_block(basis, terms, sector, characters,
+                                                          vectors, vector, threads),
+                vectors.vectors(), asked, budget, 1e-10, threads))
     return out
-def spectra_free(model: 'Model', count: int = 5, sztot: Optional[int] = None,
-                 spin_flip: bool = False, threads: int = 0) -> dict:
-    '''
-    The lowest levels of every sector, without forming a block.
 
-    The same walk as :func:`spectra`, but the product is applied to vectors instead
-    of being written down: what remains in memory is the vector alone.
 
-    Args:
-        model: the model.
-        count: how many levels per sector.
-        sztot: total charge, or None for the whole space.
-        spin_flip: if True, resolve the spin-flip parity as well.
-        threads: workers for the product; 0 means one per core.
-    Returns:
-        A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
-    '''
-    require()
-    basis = basis_of(model, sztot)
-    terms = coupling_terms(model)
-    orbits = _edkern.sector_map(basis, globals()["translations"](model))
-    spin = monomial_of(model, model._spin_flip_action()) if spin_flip else None
-    out = {}
-    for spec, sector, characters, vectors in sector_pieces(model, basis, orbits, spin, spin_flip,
-                                                           threads, sztot):
-        asked = min(count, vectors.vectors())
-        out[spec.key] = np.asarray(_edkern.lowest_eigenvalues_free(
-            lambda vector: _edkern.sector_apply_block(basis, terms, sector, characters,
-                                                      vectors, vector, threads),
-            vectors.vectors(), asked, max(200, 40 * asked), 1e-10, threads))
-    return out
 def sectors(model: 'Model', sztot: Optional[int] = None, spin_flip: bool = False) -> dict:
     '''
     The whole decomposition, one sector at a time.

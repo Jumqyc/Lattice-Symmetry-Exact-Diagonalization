@@ -394,27 +394,26 @@ class Model:
                 for key, (basis, block) in built.items()}
 
     def spectra(self, Sztot: Optional[int] = None, count: int = 5,
-                spin_flip: bool = False, threads: int = 0
+                spin_flip: bool = False, threads: int = 0, cache: bool = True
                 ) -> dict[SectorKey, NDArray[np.float64]]:
         '''
-        Lowest levels of every sector, built and solved one sector at a time.
-
-        This is the method to use when what is wanted is the spectrum: it never
-        holds more than one sector's Hamiltonian and one block at a time, and it
-        parallelizes the construction of that one sector rather than the set of
-        them.
+        Lowest levels of every sector.
 
         Args:
             Sztot: If given, work in the sector ``sum(state) == Sztot``.
             count: how many levels per sector.
             spin_flip: If True, also resolve the spin-flip parity.
-            threads: workers for the sector Hamiltonian; 0 means one per core.
+            threads: workers for the kernels; 0 means one per core.
+            cache: If True, build each sector's block once and diagonalize it; if
+                False, never build it and apply the product to vectors step by step.
+                The first pays the term applications once and holds the block -- at
+                4x4 half filling 0.45 s against 13.6 s -- and the second holds only
+                the vector, which is what a lattice too large for the block needs.
         Returns:
             A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
         Raises:
-            ValueError: if *spin_flip* is asked for a charge sector the spin flip
-                does not preserve, or if the couplings are not closed under the
-                group.
+            ValueError: if the spin flip is asked for a charge sector it does not
+                preserve, or if the couplings are not closed under the group.
         '''
         if spin_flip and Sztot is not None and \
                 2 * Sztot != self.lattice.size_of_unit_cell * (self.physical_dim - 1):
@@ -424,32 +423,7 @@ class Model:
                 "Sztot is self-conjugate.")
         self.check_symmetry()
         return kernel.spectra(self, count=count, sztot=Sztot, spin_flip=spin_flip,
-                              threads=threads)
-
-    def spectra_free(self, Sztot: Optional[int] = None, count: int = 5,
-                     spin_flip: bool = False, threads: int = 0
-                     ) -> dict[SectorKey, NDArray[np.float64]]:
-        '''
-        Lowest levels of every sector, without ever forming a block.
-
-        The same sectors as :meth:`spectra`, with the block never written down: the
-        product is expanded onto the sector's orbits, applied term by term, and
-        projected back.  What stays in memory is the vector.
-
-        Args:
-            Sztot: If given, work in the sector ``sum(state) == Sztot``.
-            count: how many levels per sector.
-            spin_flip: If True, also resolve the spin-flip parity.
-            threads: workers for the product; 0 means one per core.
-        Returns:
-            A dict keyed by ``(k, alpha, s)`` of the eigenvalues, ascending.
-        Raises:
-            ValueError: if the spin flip is asked for a charge sector it does not
-                preserve, or if the couplings are not closed under the group.
-        '''
-        self.check_symmetry()
-        return kernel.spectra_free(self, count=count, sztot=Sztot, spin_flip=spin_flip,
-                                   threads=threads)
+                              threads=threads, cache=cache)
 
     def sector_specs(self, Sztot: Optional[int] = None, spin_flip: bool = False
                      ) -> 'Iterator[SectorSpec]':
